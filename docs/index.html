@@ -59,6 +59,12 @@
   .shots figcaption{font-size:13px;color:var(--text);padding:9px 12px;border-bottom:1px solid var(--border)}
   .shots img{width:100%;display:block}
   .shots-note{font-size:12px;color:var(--dim);margin-top:2px}
+  /* 키 화면의 노출된 키 영역을 덧칠해 가림 */
+  .imgbox{position:relative}
+  .keymask{position:absolute;left:16%;top:47.5%;width:74%;height:5%;
+    background:#16242e;border:1px solid #2b3a47;border-radius:4px;
+    display:flex;align-items:center;justify-content:center;
+    color:#8b949e;font-size:12px;letter-spacing:1px}
 </style>
 </head>
 <body>
@@ -155,9 +161,15 @@
         <figure><figcaption>① 쿠키 안내가 뜨면 ‘Accept All’ 클릭</figcaption><img src="img/01_cookie.png" alt="쿠키 동의"></figure>
         <figure><figcaption>② 검색창에 ‘deepseek’ 검색 후 deepseek-v4-pro 선택</figcaption><img src="img/02_search.png" alt="모델 검색"></figure>
         <figure><figcaption>③ ‘Before You Use AI Models’ 창에서 ‘Acknowledge &amp; Continue’ 클릭</figcaption><img src="img/03_acknowledge.png" alt="이용 동의"></figure>
-        <figure><figcaption>④ ‘Sign In’ 창에 이메일 입력 후 ‘Next’ → 로그인(인증 메일 확인)</figcaption><img src="img/04_signin.png" alt="로그인"></figure>
-        <figure><figcaption>⑤ Build 탭에서 ‘Generate API Key’ 클릭 → 생성된 키 옆 ‘Copy’</figcaption><img src="img/05_generate.png" alt="API 키 발급"></figure>
-        <p class="shots-note">※ 발급된 키가 보이는 화면은 보안을 위해 첨부하지 않았습니다. ‘Copy’로 복사한 nvapi- 키를 앱에 붙여넣으세요.</p>
+        <figure><figcaption>④ Build 탭 코드의 표시된 <b>api_key</b> 자리에 키가 들어간다. 단, 키를 받으려면 먼저 <b>우측 상단 ‘Login’</b>을 눌러야 한다.</figcaption><img src="img/04_build.png" alt="Build 코드의 api_key 위치"></figure>
+        <figure><figcaption>⑤ ‘Login’을 누르면 나오는 화면. 구글 메일이나 아무 메일을 입력하고 ‘Next’(또는 로그인 후 회원가입)하면 키를 발급받을 수 있다.</figcaption><img src="img/05_signin.png" alt="로그인 화면"></figure>
+        <figure class="masked">
+          <figcaption>⑥ ‘Generate API Key’를 누르면 그 api_key 자리에 <span class="key">nvapi-</span> 키가 나타난다. 이 키를 ‘Copy’해서 <b>우리 앱의 키 입력 화면</b>에 붙여넣으면 끝.</figcaption>
+          <div class="imgbox">
+            <img src="img/06_key.png" alt="발급된 API 키 화면">
+            <div class="keymask">🔒 발급된 nvapi- 키 (보안상 가림)</div>
+          </div>
+        </figure>
       </div>
     </div>
   </div>
