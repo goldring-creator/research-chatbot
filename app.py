@@ -52,6 +52,30 @@ else:
 
 NVIDIA_URL = "https://build.nvidia.com"
 
+# ── 모드별 활용 안내 (모드 전환 시 표시) ──
+MODE_DESC = {
+    "design": [
+        "연구 아이디어 → 서론(배경·갭·RQ)·이론적 틀·표집·변수·측정·분석 설계",
+        "예상 타당도 위협과 통제 방안 제안",
+        "예) \"교사 AI 활용과 직무만족 관계를 연구하고 싶어\"",
+    ],
+    "review": [
+        "초안을 입력하거나 📎로 파일 첨부 → 모래시계 구조로 검토",
+        "결과·해석 분리, 논의 6단계, 재현가능성, 인용 점검",
+        "예) 📎 내 서론 초안.hwpx 첨부 → 피드백",
+    ],
+    "chat": [
+        "연구방법론·통계·연구설계에 대한 자유 질문",
+        "개념 설명, 연구 간 비교, 분석방법 추천 등",
+        "예) \"위계적 회귀와 SEM 중 뭐가 적합해?\"",
+    ],
+    "code": [
+        "HTML·CSS·파이썬 등 코드 작성, 문서 초안 생성",
+        "상단 📤 버튼은 지금까지 내용을 HTML로 자동 생성·저장합니다",
+        "예) \"설문 결과를 보여줄 간단한 HTML 표 만들어줘\"",
+    ],
+}
+
 # ── 버전·업데이트 확인 ──
 APP_VERSION = "0.1.5"
 REPO = "goldring-creator/research-chatbot"
@@ -82,16 +106,28 @@ class _Tooltip:
             return
         x = self.widget.winfo_rootx() + 6
         y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        root = self.widget.winfo_toplevel()
         self.tip = tw = tk.Toplevel(self.widget)
         tw.wm_overrideredirect(True)
-        tw.wm_geometry(f"+{x}+{y}")
-        tk.Label(tw, text=self.text, bg="#1f2630", fg="#e6edf3",
-                 font=(MONO, 9), padx=8, pady=4, relief="solid", bd=1).pack()
         try:
-            tw.attributes("-topmost", True)
-            tw.lift()                 # 항상 위 창보다도 앞으로
+            tw.wm_attributes("-topmost", True)
         except Exception:
             pass
+        tk.Label(tw, text=self.text, bg="#1f2630", fg="#e6edf3",
+                 font=(MONO, 9), padx=8, pady=4, relief="solid", bd=1).pack()
+        tw.wm_geometry(f"+{x}+{y}")
+        tw.update_idletasks()
+
+        def raise_tip():
+            if not tw.winfo_exists():
+                return
+            try:
+                tw.lift(root)                 # 메인(항상 위) 창 바로 위로 명시적 올림
+                tw.wm_attributes("-topmost", True)
+            except Exception:
+                pass
+        raise_tip()
+        tw.after(20, raise_tip)               # 창 매니저가 재배치한 뒤 한 번 더
 
     def hide(self, e=None):
         if self.tip:
@@ -237,14 +273,12 @@ class App(tk.Tk):
         # 좌측: 모드 / 모델
         self.mode_btn = self._btn(left, self._mode_label(), self.cycle_mode, fg=C_GREEN_TX)
         self.mode_btn.pack(side="left", padx=4)
-        _Tooltip(self.mode_btn, "모드 전환 — 설계 / 검토 / 자유문답")
-        self.model_btn = self._btn(left, self._model_label(), self.cycle_model, fg=C_BLUE)
-        self.model_btn.pack(side="left", padx=4)
-        _Tooltip(self.model_btn, "AI 모델 전환 — DeepSeek(정밀) / Nemotron(빠름)")
+        _Tooltip(self.mode_btn, "모드 전환 — 설계 / 검토 / 자유문답 / 코드·문서")
 
         # 우측: 아이콘 (균등 간격)
         for txt, cmd, tip in [
-            ("📎", self.attach_file, "파일 첨부 — 초안을 검토 모드로 분석"),
+            ("📎", self.attach_file, "파일 첨부(여러 개 가능) — 초안을 검토 모드로 분석"),
+            ("📤", self.export_html, "지금까지 내용을 정돈된 HTML로 자동 생성·저장"),
             ("💾", self.save_conv, "현재 대화 저장"),
             ("📂", self.load_conv, "저장한 대화 불러오기"),
             ("📌", self.toggle_pin, "항상 위에 고정 켜기/끄기"),
@@ -255,9 +289,14 @@ class App(tk.Tk):
             _Tooltip(b, tip)
         tk.Frame(self, bg=C_BORDER, height=1).pack(side="top", fill="x")  # 툴바 구분선
 
+        # 각주: 읽기 지원 형식 (맨 아래)
+        foot = tk.Label(self, text="📎 " + core.SUPPORTED_NOTE, bg=C_BG, fg=C_DIM,
+                        font=(MONO, 9))
+        foot.pack(side="bottom", fill="x", pady=(0, 6))
+
         # 입력 영역 — 맨 아래 고정 + 안쪽 카드(밝은 테두리)
         ibar_outer = tk.Frame(self, bg=C_BG)
-        ibar_outer.pack(side="bottom", fill="x", padx=10, pady=(4, 10))
+        ibar_outer.pack(side="bottom", fill="x", padx=10, pady=(4, 0))
         ibar = tk.Frame(ibar_outer, bg=C_BG2, highlightthickness=1,
                         highlightbackground=C_LINE, highlightcolor=C_LINE, bd=0)
         ibar.pack(fill="x")
@@ -301,11 +340,13 @@ class App(tk.Tk):
         self.chat.tag_config("b", font=(MONO, 11, "bold"))
         self.chat.tag_config("h", foreground=C_GREEN_TX, font=(MONO, 12, "bold"))
         self.chat.tag_config("hr", foreground=C_HR)
+        self.chat.tag_config("code", foreground="#c9d1d9", font=(MONO, 10))
 
         self._sys(f"준비 완료. 모드: {prompts.MODE_LABELS[self.mode]} · "
                   f"모델: {core.MODEL_LABELS[self.model_key]}")
         self._sys("연구 아이디어를 입력하거나 📎로 초안을 첨부하세요. "
                   "(Enter 전송 / Shift+Enter 줄바꿈)")
+        self._mode_help()      # 현재 모드로 가능한 작업 안내
         self._check_update()   # 백그라운드로 새 버전 확인
 
     # ════════ 업데이트 알림 ════════
@@ -343,23 +384,17 @@ class App(tk.Tk):
     def _mode_label(self):
         return f" 모드:{prompts.MODE_LABELS[self.mode]} ▾ "
 
-    def _model_label(self):
-        short = "DeepSeek" if self.model_key == "deepseek" else "Nemotron"
-        return f" 모델:{short} ▾ "
-
     # ════════ 토글/명령 ════════
     def cycle_mode(self):
-        order = ["design", "review", "chat"]
-        self.mode = order[(order.index(self.mode) + 1) % 3]
+        order = ["design", "review", "chat", "code"]
+        self.mode = order[(order.index(self.mode) + 1) % len(order)]
         self.mode_btn.configure(text=self._mode_label())
-        self._sys(f"→ {prompts.MODE_LABELS[self.mode]} 모드")
+        self._sys(f"→ {prompts.MODE_LABELS[self.mode]} 모드로 변경")
+        self._mode_help()
 
-    def cycle_model(self):
-        self.model_key = "nemotron" if self.model_key == "deepseek" else "deepseek"
-        self.model_btn.configure(text=self._model_label())
-        self._sys(f"→ 모델: {core.MODEL_LABELS[self.model_key]}")
-        if self.model_key == "nemotron":
-            self._warn("주의: Nemotron은 가끔 한자를 섞습니다. 한자 경고를 확인하세요.")
+    def _mode_help(self):
+        for line in MODE_DESC.get(self.mode, []):
+            self._append("   • " + line + "\n", "sys")
 
     def toggle_pin(self):
         self.pinned = not self.pinned
@@ -386,21 +421,61 @@ class App(tk.Tk):
         link.bind("<Button-1>", lambda e: webbrowser.open(NVIDIA_URL))
 
     def attach_file(self):
-        path = filedialog.askopenfilename(
-            title="검토할 초안 선택",
-            filetypes=[("문서", "*.txt *.md *.pdf *.docx *.hwpx *.hwp *.xlsx"),
-                       ("모든 파일", "*.*")])
-        if not path:
+        paths = filedialog.askopenfilenames(
+            title="검토할 파일 선택 (여러 개 가능)",
+            filetypes=[("지원 문서", "*.txt *.md *.pdf *.docx"), ("모든 파일", "*.*")])
+        if not paths:
             return
-        content, err = core.read_file(path)
-        if err:
-            self._warn(err)
+        parts, names = [], []
+        for p in paths:
+            content, err = core.read_file(p)
+            if err:
+                self._warn(f"{os.path.basename(p)}: {err}")
+                continue
+            parts.append(f"[파일: {os.path.basename(p)}]\n{content}")
+            names.append(os.path.basename(p))
+        if not parts:
             return
         self.mode = "review"
         self.mode_btn.configure(text=self._mode_label())
-        self._sys(f"📎 {os.path.basename(path)} ({len(content)}자) 읽음 → 검토 모드")
-        self._dispatch(f"다음 원고를 검토해줘:\n\n{content}",
-                       display=f"[첨부] {os.path.basename(path)} 검토 요청")
+        self._sys(f"📎 {len(names)}개 파일 읽음 → 검토 모드: {', '.join(names)}")
+        self._dispatch("다음 원고를 검토해줘:\n\n" + "\n\n".join(parts),
+                       display=f"[첨부] {', '.join(names)} 검토 요청")
+
+    def export_html(self):
+        """버튼 한 번으로: 코드 모드 전환 → 지금까지 내용을 HTML로 생성 → 저장 → 브라우저로 열기."""
+        if self.streaming:
+            return
+        if not any(m["role"] == "assistant" for m in self.history):
+            self._sys("먼저 내용을 작성한 뒤 눌러주세요 (설계·검토·문답 등).")
+            return
+        self.mode = "code"
+        self.mode_btn.configure(text=self._mode_label())
+        self._sys("→ 코드/문서 모드로 전환, 지금까지 내용을 HTML로 만드는 중…")
+        self._export_after = True
+        self._dispatch(
+            "지금까지의 대화 내용을 바탕으로, 제목·소제목·표·간단한 CSS 스타일이 포함된 "
+            "하나의 완성된 standalone HTML 문서를 만들어줘. 코드블록 표시(```) 없이 "
+            "<!DOCTYPE html>로 시작하는 순수 HTML만 출력해.",
+            display="[내보내기] 지금까지 내용을 HTML 페이지로 생성")
+
+    def _save_html(self, answer):
+        html = answer.strip()
+        m = re.search(r"<!DOCTYPE html.*?</html\s*>", html, re.S | re.I)
+        if m:
+            html = m.group(0)
+        else:
+            html = re.sub(r"^```[a-zA-Z]*\n?", "", html)
+            html = re.sub(r"\n?```$", "", html.strip())
+        ts = datetime.now().strftime("%Y-%m-%d_%H%M")
+        path = os.path.join(OUT_DIR, f"{ts}_생성문서.html")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(html)
+            self._sys(f"📤 HTML 저장됨 — 브라우저로 엽니다:\n   {path}")
+            webbrowser.open("file://" + path)
+        except Exception as e:
+            self._warn(f"HTML 저장 오류: {e}")
 
     def save_conv(self):
         if not self.history:
@@ -506,8 +581,11 @@ class App(tk.Tk):
                         self.chat.delete(self._ans_start, "end-1c")
                         self.chat.configure(state="disabled")
                         self._first_chunk = False
-                    self._answer_acc.append(data)        # 원본 보관(굵게 판별용)
-                    self._append(data.replace("**", ""), "bot")  # 표시는 ** 제거
+                    self._answer_acc.append(data)        # 원본 보관
+                    if self.mode == "code":              # 코드 모드는 원본 그대로
+                        self._append(data, "code")
+                    else:                                # 그 외엔 ** 제거
+                        self._append(data.replace("**", ""), "bot")
                 elif kind == "err":
                     if self._first_chunk:        # 대기표시 제거
                         self.chat.configure(state="normal")
@@ -534,7 +612,10 @@ class App(tk.Tk):
         self.chat.configure(state="normal")
         self.chat.delete(self._ans_start, "end-1c")
         self.chat.configure(state="disabled")
-        self._render_markdown(answer)
+        if self.mode == "code":
+            self._append(answer, "code")          # 코드는 서식 보존(렌더 안 함)
+        else:
+            self._render_markdown(answer)
         if self.mode in ("design", "review"):
             self._append(prompts.CITATION_NOTE + "\n", "warn")
         cjk = core.check_cjk(answer)
@@ -554,6 +635,11 @@ class App(tk.Tk):
                 self._sys(f"📄 저장됨: {path}")
             except Exception:
                 pass
+
+        # 📤 내보내기 요청이었으면 결과를 HTML로 저장·열기
+        if getattr(self, "_export_after", False):
+            self._export_after = False
+            self._save_html(answer)
 
     # ════════ 출력 헬퍼 ════════
     def _append(self, text, tag):

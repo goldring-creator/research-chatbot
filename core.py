@@ -26,7 +26,9 @@ MODEL_LABELS = {
 }
 
 BASE_URL = "https://integrate.api.nvidia.com/v1"
-KORDOC = os.path.expanduser("~/.npm-global/bin/kordoc")
+
+# 읽기 지원 형식 (앱 각주 표시용)
+SUPPORTED_NOTE = "읽기 지원: PDF · Word(.docx) · 텍스트(.txt /.md)   ·   한글(.hwp /.hwpx)은 지원 제한"
 
 
 # ── 키 저장/로드 ──
@@ -66,32 +68,33 @@ def check_cjk(text: str) -> list:
     return found
 
 
-# ── 파일 → 텍스트 (kordoc 활용) ──
+# ── 파일 → 텍스트 (내장 파서: pypdf / python-docx) ──
 def read_file(path: str):
     path = os.path.expanduser(path.strip().strip('"').strip("'"))
     if not os.path.exists(path):
-        return None, f"파일을 찾을 수 없습니다: {path}"
+        return None, f"파일을 찾을 수 없습니다: {os.path.basename(path)}"
     ext = os.path.splitext(path)[1].lower()
-    if ext in (".txt", ".md"):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
+    try:
+        if ext in (".txt", ".md"):
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
                 return f.read(), None
-        except Exception as e:
-            return None, f"파일 읽기 오류: {e}"
-    if ext in (".pdf", ".docx", ".hwpx", ".hwp", ".xlsx"):
-        if not os.path.exists(KORDOC):
-            return None, "이 형식(pdf·docx·hwpx 등)은 kordoc이 설치된 환경에서만 읽을 수 있습니다."
-        try:
-            result = subprocess.run(
-                [KORDOC, "parse", path],
-                capture_output=True, text=True, timeout=120
-            )
-            if result.returncode != 0:
-                return None, f"파일 변환 실패: {result.stderr[:300]}"
-            return result.stdout, None
-        except Exception as e:
-            return None, f"파일 변환 오류: {e}"
-    return None, f"지원하지 않는 형식입니다: {ext}"
+        if ext == ".pdf":
+            from pypdf import PdfReader
+            reader = PdfReader(path)
+            text = "\n".join((p.extract_text() or "") for p in reader.pages).strip()
+            if not text:
+                return None, "이미지로 스캔된 PDF로 보입니다 — 텍스트를 추출할 수 없습니다."
+            return text, None
+        if ext == ".docx":
+            import docx
+            d = docx.Document(path)
+            return "\n".join(p.text for p in d.paragraphs), None
+        if ext in (".hwp", ".hwpx"):
+            return None, ("한글 파일(.hwp/.hwpx)은 현재 지원되지 않습니다. "
+                          "한글에서 'PDF로 저장' 후 PDF를 첨부해 주세요.")
+        return None, f"지원하지 않는 형식입니다: {ext} (PDF·docx·txt·md만 가능)"
+    except Exception as e:
+        return None, f"파일 읽기 오류: {e}"
 
 
 # ── 모델 호출 (스트리밍 제너레이터) ──
