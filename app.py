@@ -69,11 +69,6 @@ MODE_DESC = {
         "개념 설명, 연구 간 비교, 분석방법 추천 등",
         "예) \"위계적 회귀와 SEM 중 뭐가 적합해?\"",
     ],
-    "code": [
-        "HTML·CSS·파이썬 등 코드 작성, 문서 초안 생성",
-        "상단 📤 버튼은 지금까지 내용을 HTML로 자동 생성·저장합니다",
-        "예) \"설문 결과를 보여줄 간단한 HTML 표 만들어줘\"",
-    ],
 }
 
 # ── 버전·업데이트 확인 ──
@@ -271,9 +266,9 @@ class App(tk.Tk):
         right.pack(side="right", padx=8, pady=6)
 
         # 좌측: 모드 / 모델
-        self.mode_btn = self._btn(left, self._mode_label(), self.cycle_mode, fg=C_GREEN_TX)
+        self.mode_btn = self._btn(left, self._mode_label(), self.open_mode_menu, fg=C_GREEN_TX)
         self.mode_btn.pack(side="left", padx=4)
-        _Tooltip(self.mode_btn, "모드 전환 — 설계 / 검토 / 자유문답 / 코드·문서")
+        _Tooltip(self.mode_btn, "모드 선택 — 클릭하면 설계 / 검토 / 자유문답 목록이 열립니다")
 
         # 우측: 아이콘 (균등 간격)
         for txt, cmd, tip in [
@@ -385,9 +380,28 @@ class App(tk.Tk):
         return f" 모드:{prompts.MODE_LABELS[self.mode]} ▾ "
 
     # ════════ 토글/명령 ════════
-    def cycle_mode(self):
-        order = ["design", "review", "chat", "code"]
-        self.mode = order[(order.index(self.mode) + 1) % len(order)]
+    MODE_ORDER = ["design", "review", "chat"]
+
+    def open_mode_menu(self):
+        """모드 버튼을 누르면 선택 목록을 띄운다(클릭해서 직접 고르기)."""
+        menu = tk.Menu(self, tearoff=0, bg=C_BG2, fg=C_TEXT,
+                       activebackground=C_GREEN, activeforeground="#0d1117",
+                       font=(MONO, 10), bd=0)
+        for key in self.MODE_ORDER:
+            mark = "● " if key == self.mode else "○ "
+            menu.add_command(label=mark + prompts.MODE_LABELS[key],
+                             command=lambda k=key: self.set_mode(k))
+        x = self.mode_btn.winfo_rootx()
+        y = self.mode_btn.winfo_rooty() + self.mode_btn.winfo_height()
+        try:
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def set_mode(self, key):
+        if key == self.mode:
+            return
+        self.mode = key
         self.mode_btn.configure(text=self._mode_label())
         self._sys(f"→ {prompts.MODE_LABELS[self.mode]} 모드로 변경")
         self._mode_help()
@@ -443,21 +457,20 @@ class App(tk.Tk):
                        display=f"[첨부] {', '.join(names)} 검토 요청")
 
     def export_html(self):
-        """버튼 한 번으로: 코드 모드 전환 → 지금까지 내용을 HTML로 생성 → 저장 → 브라우저로 열기."""
+        """버튼 한 번으로: 지금까지 내용을 HTML로 생성 → 저장 → 브라우저로 열기.
+        선택된 모드는 그대로 두고, 이번 턴만 내부적으로 HTML 생성용 프롬프트를 쓴다."""
         if self.streaming:
             return
         if not any(m["role"] == "assistant" for m in self.history):
             self._sys("먼저 내용을 작성한 뒤 눌러주세요 (설계·검토·문답 등).")
             return
-        self.mode = "code"
-        self.mode_btn.configure(text=self._mode_label())
-        self._sys("→ 코드/문서 모드로 전환, 지금까지 내용을 HTML로 만드는 중…")
+        self._sys("📤 지금까지 내용을 HTML로 만드는 중…")
         self._export_after = True
         self._dispatch(
             "지금까지의 대화 내용을 바탕으로, 제목·소제목·표·간단한 CSS 스타일이 포함된 "
             "하나의 완성된 standalone HTML 문서를 만들어줘. 코드블록 표시(```) 없이 "
             "<!DOCTYPE html>로 시작하는 순수 HTML만 출력해.",
-            display="[내보내기] 지금까지 내용을 HTML 페이지로 생성")
+            display="[내보내기] 지금까지 내용을 HTML 페이지로 생성", mode="code")
 
     def _save_html(self, answer):
         html = answer.strip()
@@ -535,7 +548,9 @@ class App(tk.Tk):
         self.inp.delete("1.0", "end")
         self._dispatch(text)
 
-    def _dispatch(self, content, display=None):
+    def _dispatch(self, content, display=None, mode=None):
+        # 이번 턴에만 쓰는 모드(예: 📤 내보내기는 'code'로 처리). 평소엔 선택된 모드.
+        self._turn_mode = mode or self.mode
         self._append("\n나 ▸ ", "user")
         self._append((display or content) + "\n", "bot")
         self.history.append({"role": "user", "content": content})
@@ -564,7 +579,7 @@ class App(tk.Tk):
         self.after(400, self._animate_loading)
 
     def _worker(self):
-        for piece in core.stream_answer(self.client, self.model_key, self.mode, self.history):
+        for piece in core.stream_answer(self.client, self.model_key, self._turn_mode, self.history):
             if isinstance(piece, tuple) and piece[0] == "__error__":
                 self.q.put(("err", piece[1]))
             else:
@@ -582,7 +597,7 @@ class App(tk.Tk):
                         self.chat.configure(state="disabled")
                         self._first_chunk = False
                     self._answer_acc.append(data)        # 원본 보관
-                    if self.mode == "code":              # 코드 모드는 원본 그대로
+                    if self._turn_mode == "code":        # HTML 내보내기는 원본 그대로
                         self._append(data, "code")
                     else:                                # 그 외엔 ** 제거
                         self._append(data.replace("**", ""), "bot")
@@ -612,11 +627,11 @@ class App(tk.Tk):
         self.chat.configure(state="normal")
         self.chat.delete(self._ans_start, "end-1c")
         self.chat.configure(state="disabled")
-        if self.mode == "code":
-            self._append(answer, "code")          # 코드는 서식 보존(렌더 안 함)
+        if self._turn_mode == "code":
+            self._append(answer, "code")          # HTML 원본은 서식 보존(렌더 안 함)
         else:
             self._render_markdown(answer)
-        if self.mode in ("design", "review"):
+        if self._turn_mode in ("design", "review"):
             self._append(prompts.CITATION_NOTE + "\n", "warn")
         cjk = core.check_cjk(answer)
         if cjk:
@@ -625,9 +640,9 @@ class App(tk.Tk):
                 self._append("   " + item + "\n", "warn")
             if len(cjk) > 10:
                 self._append(f"   …외 {len(cjk) - 10}개\n", "warn")
-        if self.mode in ("design", "review"):
+        if self._turn_mode in ("design", "review"):
             ts = datetime.now().strftime("%Y-%m-%d_%H%M")
-            label = prompts.MODE_LABELS[self.mode]
+            label = prompts.MODE_LABELS[self._turn_mode]
             path = os.path.join(OUT_DIR, f"{ts}_{label}.md")
             try:
                 with open(path, "w", encoding="utf-8") as f:
