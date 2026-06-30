@@ -52,6 +52,11 @@ else:
 
 NVIDIA_URL = "https://build.nvidia.com"
 
+# ── 버전·업데이트 확인 ──
+APP_VERSION = "0.1.5"
+REPO = "goldring-creator/research-chatbot"
+RELEASES_URL = f"https://github.com/{REPO}/releases/latest"
+
 # ── 키 발급 안내 (1) 2) 3) 순서) ──
 GUIDE_STEPS = [
     "1)  아래 [NVIDIA 사이트 열기]를 눌러 로그인 (구글·이메일)",
@@ -223,6 +228,7 @@ class App(tk.Tk):
 
         bar = tk.Frame(self, bg=C_BG2)
         bar.pack(fill="x")
+        self._toolbar = bar
         left = tk.Frame(bar, bg=C_BG2)
         left.pack(side="left", padx=8, pady=6)
         right = tk.Frame(bar, bg=C_BG2)
@@ -300,6 +306,39 @@ class App(tk.Tk):
                   f"모델: {core.MODEL_LABELS[self.model_key]}")
         self._sys("연구 아이디어를 입력하거나 📎로 초안을 첨부하세요. "
                   "(Enter 전송 / Shift+Enter 줄바꿈)")
+        self._check_update()   # 백그라운드로 새 버전 확인
+
+    # ════════ 업데이트 알림 ════════
+    def _check_update(self):
+        def work():
+            try:
+                import urllib.request
+                req = urllib.request.Request(
+                    f"https://api.github.com/repos/{REPO}/releases/latest",
+                    headers={"User-Agent": "research-chatbot"})
+                with urllib.request.urlopen(req, timeout=8) as r:
+                    data = json.load(r)
+                latest = (data.get("tag_name") or "").lstrip("v")
+                if latest and self._is_newer(latest, APP_VERSION):
+                    self.after(0, lambda: self._show_update(latest))
+            except Exception:
+                pass  # 네트워크 실패 시 조용히 무시
+        threading.Thread(target=work, daemon=True).start()
+
+    def _is_newer(self, a, b):
+        pa = [int(x) for x in re.findall(r"\d+", a)]
+        pb = [int(x) for x in re.findall(r"\d+", b)]
+        return pa > pb
+
+    def _show_update(self, latest):
+        if getattr(self, "_update_shown", False):
+            return
+        self._update_shown = True
+        banner = tk.Label(self, text=f"🆕 새 버전 v{latest} 이(가) 있습니다 — 클릭해서 다운로드",
+                          bg="#1f6feb", fg="#ffffff", font=(MONO, 10, "bold"),
+                          cursor="hand2", pady=6)
+        banner.pack(side="top", fill="x", before=self._toolbar)
+        banner.bind("<Button-1>", lambda e: webbrowser.open(RELEASES_URL))
 
     def _mode_label(self):
         return f" 모드:{prompts.MODE_LABELS[self.mode]} ▾ "
