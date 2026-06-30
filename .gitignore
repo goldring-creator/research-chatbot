@@ -1,0 +1,17 @@
+# 빌드 산출물
+build/
+dist/
+*.spec
+
+# 파이썬
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 사용자 데이터 (혹시 폴더 안에 생기는 경우 대비)
+conversations/
+outputs/
+
+# OS
+.DS_Store
