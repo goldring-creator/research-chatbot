@@ -98,8 +98,9 @@ def read_file(path: str):
 
 
 # ── 모델 호출 (스트리밍 제너레이터) ──
-def stream_answer(client, model_key, mode, history):
-    """history를 보내 답변 청크를 하나씩 yield 한다. 오류 시 ('__error__', 메시지) yield."""
+def stream_answer(client, model_key, mode, history, should_cancel=None):
+    """history를 보내 답변 청크를 하나씩 yield 한다. 오류 시 ('__error__', 메시지) yield.
+    should_cancel()가 True를 반환하면 스트림을 닫고 즉시 멈춘다(사용자 중지)."""
     system = prompts.build_system(mode)
     messages = [{"role": "system", "content": system}] + history
     kwargs = dict(
@@ -116,6 +117,9 @@ def stream_answer(client, model_key, mode, history):
     try:
         stream = client.chat.completions.create(**kwargs)
         for chunk in stream:
+            if should_cancel and should_cancel():   # 사용자가 중지 → 스트림 종료
+                stream.close()
+                return
             delta = chunk.choices[0].delta.content
             if delta:
                 yield delta

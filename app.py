@@ -12,6 +12,7 @@ import queue
 import threading
 import platform
 import webbrowser
+import subprocess
 from datetime import datetime
 
 import tkinter as tk
@@ -146,6 +147,8 @@ class App(tk.Tk):
         self.client = None
         self.q = queue.Queue()
         self.streaming = False
+        self._cancel = False          # 사용자가 답변/내보내기 중지를 눌렀는지
+        self._export_kind = None      # 내보내기 진행 중이면 "html"/"docx"
 
         key = core.load_key()
         if core.valid_key_format(key):
@@ -273,7 +276,7 @@ class App(tk.Tk):
         # 우측: 아이콘 (균등 간격)
         for txt, cmd, tip in [
             ("📎", self.attach_file, "파일 첨부(여러 개 가능) — 초안을 검토 모드로 분석"),
-            ("📤", self.export_html, "지금까지 내용을 정돈된 HTML로 자동 생성·저장"),
+            ("📤", self.open_export_menu, "지금까지 내용을 HTML·Word 문서로 내보내기"),
             ("💾", self.save_conv, "현재 대화 저장"),
             ("📂", self.load_conv, "저장한 대화 불러오기"),
             ("📌", self.toggle_pin, "항상 위에 고정 켜기/끄기"),
@@ -299,7 +302,8 @@ class App(tk.Tk):
         self.send_btn = tk.Label(ibar, text="보내기", bg=C_GREEN, fg="#0d1117",
                                  font=(MONO, 11, "bold"), cursor="hand2", padx=14)
         self.send_btn.pack(side="right", fill="y", padx=(4, 6), pady=6)
-        self.send_btn.bind("<Button-1>", lambda e: self.send())
+        self.send_btn.bind("<Button-1>", lambda e: self._on_send_click())
+        self.bind("<Escape>", lambda e: self.cancel_stream())   # Esc로도 중지
         tk.Label(ibar, text=" 입력 ▸", bg=C_BG2, fg=C_GREEN_TX,
                  font=(MONO, 11, "bold")).pack(side="left", anchor="n", pady=12)
         self.inp = tk.Text(ibar, bg=C_BG2, fg=C_TEXT, font=(MONO, 11), height=3,
@@ -322,10 +326,14 @@ class App(tk.Tk):
         self.chat = tk.Text(card, bg=C_BG, fg=C_TEXT, font=(MONO, 11), wrap="word",
                             relief="flat", bd=0, padx=12, pady=10, insertbackground=C_TEXT,
                             state="disabled", spacing1=2, spacing3=4)
-        sb = tk.Scrollbar(card, command=self.chat.yview)
-        self.chat.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
+        self._sb = tk.Scrollbar(card, command=self.chat.yview)
+        self.chat.configure(yscrollcommand=self._on_chat_scroll)
+        self._sb.pack(side="right", fill="y")
         self.chat.pack(side="left", fill="both", expand=True)
+        # 위로 스크롤해 읽는 중일 때만 나타나는 '맨 아래로' 버튼 (처음엔 숨김)
+        self._jump_btn = tk.Label(card, text="↓ 맨 아래로", bg=C_GREEN, fg="#0d1117",
+                                  font=(MONO, 9, "bold"), cursor="hand2", padx=8, pady=3)
+        self._jump_btn.bind("<Button-1>", lambda e: self._jump_to_bottom())
         self.chat.tag_config("user", foreground=C_BLUE, font=(MONO, 11, "bold"))
         self.chat.tag_config("bot", foreground=C_TEXT)
         self.chat.tag_config("sys", foreground=C_DIM, font=(MONO, 10))
@@ -406,6 +414,26 @@ class App(tk.Tk):
         self._sys(f"→ {prompts.MODE_LABELS[self.mode]} 모드로 변경")
         self._mode_help()
 
+    # ── 보내기/중지 버튼 상태 ──
+    def _set_stop_button(self):
+        self.send_btn.configure(text="■ 중지", bg=C_RED, fg="#0d1117")
+
+    def _set_send_button(self):
+        self.send_btn.configure(text="보내기", bg=C_GREEN, fg="#0d1117")
+
+    def _on_send_click(self):
+        if self.streaming:
+            self.cancel_stream()
+        else:
+            self.send()
+
+    def cancel_stream(self):
+        """진행 중인 답변/내보내기를 중지한다(부분 결과는 유지)."""
+        if not self.streaming:
+            return
+        self._cancel = True
+        self.send_btn.configure(text="중지 중…")
+
     def _mode_help(self):
         for line in MODE_DESC.get(self.mode, []):
             self._append("   • " + line + "\n", "sys")
@@ -456,21 +484,124 @@ class App(tk.Tk):
         self._dispatch("다음 원고를 검토해줘:\n\n" + "\n\n".join(parts),
                        display=f"[첨부] {', '.join(names)} 검토 요청")
 
-    def export_html(self):
-        """버튼 한 번으로: 지금까지 내용을 HTML로 생성 → 저장 → 브라우저로 열기.
-        선택된 모드는 그대로 두고, 이번 턴만 내부적으로 HTML 생성용 프롬프트를 쓴다."""
+    # ════════ 내보내기 (HTML / Word) ════════
+    def open_export_menu(self):
+        """📤 — 클릭 시 HTML / Word 중 형식을 고르는 메뉴를 띄운다."""
         if self.streaming:
+            self._sys("답변 생성이 끝난 뒤 내보내기를 해주세요.")
             return
         if not any(m["role"] == "assistant" for m in self.history):
             self._sys("먼저 내용을 작성한 뒤 눌러주세요 (설계·검토·문답 등).")
             return
-        self._sys("📤 지금까지 내용을 HTML로 만드는 중…")
-        self._export_after = True
-        self._dispatch(
-            "지금까지의 대화 내용을 바탕으로, 제목·소제목·표·간단한 CSS 스타일이 포함된 "
-            "하나의 완성된 standalone HTML 문서를 만들어줘. 코드블록 표시(```) 없이 "
-            "<!DOCTYPE html>로 시작하는 순수 HTML만 출력해.",
-            display="[내보내기] 지금까지 내용을 HTML 페이지로 생성", mode="code")
+        menu = tk.Menu(self, tearoff=0, bg=C_BG2, fg=C_TEXT,
+                       activebackground=C_GREEN, activeforeground="#0d1117",
+                       font=(MONO, 10), bd=0)
+        menu.add_command(label="HTML 문서 (.html)",
+                         command=lambda: self.start_export("html"))
+        menu.add_command(label="Word 문서 (.docx)",
+                         command=lambda: self.start_export("docx"))
+        try:
+            menu.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
+        finally:
+            menu.grab_release()
+
+    def start_export(self, kind):
+        """선택한 형식으로 '지금까지 내용'을 문서로 생성한다(대화창·기록은 건드리지 않음)."""
+        if self.streaming:
+            return
+        instruction = (prompts.EXPORT_HTML_INSTRUCTION if kind == "html"
+                       else prompts.EXPORT_DOCX_INSTRUCTION)
+        msgs = self.history + [{"role": "user", "content": instruction}]   # history 미변경
+        self._export_kind = kind
+        self._exp_acc = []
+        self._exp_err = None
+        self._cancel = False
+        self.streaming = True
+        self._set_stop_button()
+        label = "HTML" if kind == "html" else "Word"
+        self._sys(f"📤 {label} 문서 생성 중…  (중지하려면 ■ 중지 또는 Esc)")
+        self._exp_start = self.chat.index("end-1c")
+        self._exp_load_i = 0
+        threading.Thread(target=self._export_worker, args=(msgs,), daemon=True).start()
+        self.after(40, self._export_poll)
+        self._animate_export()
+
+    def _export_worker(self, msgs):
+        for piece in core.stream_answer(self.client, self.model_key, "code", msgs,
+                                        should_cancel=lambda: self._cancel):
+            if isinstance(piece, tuple) and piece[0] == "__error__":
+                self.q.put(("err", piece[1]))
+            else:
+                self.q.put(("chunk", piece))
+        self.q.put(("done", None))
+
+    def _export_poll(self):
+        try:
+            while True:
+                kind, data = self.q.get_nowait()
+                if kind == "chunk":
+                    self._exp_acc.append(data)        # 화면엔 출력하지 않음
+                elif kind == "err":
+                    self._exp_err = data
+                elif kind == "done":
+                    self._finish_export()
+                    return
+        except queue.Empty:
+            pass
+        if self.streaming and self._export_kind is not None:
+            self.after(40, self._export_poll)
+
+    def _animate_export(self):
+        if not self.streaming or self._export_kind is None:
+            return
+        frames = ["·", "· ·", "· · ·", "· · · ·"]
+        follow = self._at_bottom()
+        self.chat.configure(state="normal")
+        self.chat.delete(self._exp_start, "end-1c")
+        self.chat.insert("end", "   생성중 " + frames[self._exp_load_i % len(frames)], "sys")
+        if follow:
+            self.chat.see("end")
+        self.chat.configure(state="disabled")
+        self._exp_load_i += 1
+        self.after(400, self._animate_export)
+
+    def _finish_export(self):
+        self.streaming = False
+        self._set_send_button()
+        # 스피너 줄 제거
+        self.chat.configure(state="normal")
+        self.chat.delete(self._exp_start, "end-1c")
+        self.chat.configure(state="disabled")
+        kind = self._export_kind
+        self._export_kind = None
+        if self._cancel:
+            self._cancel = False
+            self._sys("내보내기를 취소했습니다.")
+            return
+        if self._exp_err:
+            self._warn(f"내보내기 오류: {self._exp_err}")
+            self._exp_err = None
+            return
+        answer = "".join(self._exp_acc)
+        if not answer.strip():
+            self._warn("문서를 생성하지 못했습니다. 다시 시도해 주세요.")
+            return
+        if kind == "html":
+            self._save_html(answer)
+        else:
+            self._save_docx(answer)
+
+    def _open_file(self, path):
+        """저장한 파일을 기본 프로그램으로 연다(브라우저·Word 등)."""
+        try:
+            if platform.system() == "Darwin":
+                subprocess.run(["open", path], check=False)
+            elif platform.system() == "Windows":
+                os.startfile(path)  # type: ignore[attr-defined]
+            else:
+                subprocess.run(["xdg-open", path], check=False)
+        except Exception:
+            webbrowser.open("file://" + path)   # 최후 수단
 
     def _save_html(self, answer):
         html = answer.strip()
@@ -481,23 +612,126 @@ class App(tk.Tk):
             html = re.sub(r"^```[a-zA-Z]*\n?", "", html)
             html = re.sub(r"\n?```$", "", html.strip())
         ts = datetime.now().strftime("%Y-%m-%d_%H%M")
-        path = os.path.join(OUT_DIR, f"{ts}_생성문서.html")
+        path = filedialog.asksaveasfilename(
+            title="HTML 저장 위치·파일명 선택",
+            initialdir=OUT_DIR, initialfile=f"{ts}_생성문서.html",
+            defaultextension=".html",
+            filetypes=[("HTML 문서", "*.html"), ("모든 파일", "*.*")])
+        if not path:
+            self._sys("내보내기를 취소했습니다.")
+            return
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(html)
-            self._sys(f"📤 HTML 저장됨 — 브라우저로 엽니다:\n   {path}")
-            webbrowser.open("file://" + path)
+            self._sys(f"📤 HTML 저장됨 — 엽니다:\n   {path}")
+            self._open_file(path)
         except Exception as e:
             self._warn(f"HTML 저장 오류: {e}")
+
+    def _save_docx(self, answer):
+        """마크다운 형태의 답변을 .docx로 변환해 저장·연다(제목·굵게·목록·표 지원)."""
+        try:
+            import docx
+        except Exception:
+            self._warn("Word 내보내기에는 python-docx가 필요합니다.")
+            return
+        text = answer.strip()
+        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)   # 혹시 모를 코드펜스 제거
+        text = re.sub(r"\n?```$", "", text.strip())
+        doc = docx.Document()
+        lines = text.split("\n")
+        i = 0
+        while i < len(lines):
+            line = lines[i].rstrip()
+            if not line.strip():
+                i += 1
+                continue
+            # 표 블록 (연속된 | … | 줄)
+            if line.lstrip().startswith("|") and line.rstrip().endswith("|"):
+                rows = []
+                while i < len(lines) and lines[i].lstrip().startswith("|"):
+                    rows.append(lines[i].strip())
+                    i += 1
+                self._docx_table(doc, rows)
+                continue
+            m = re.match(r"^(#{1,6})\s*(.*)", line)
+            if m:                                       # 제목
+                doc.add_heading(m.group(2).strip(), level=min(len(m.group(1)), 4))
+                i += 1
+                continue
+            mb = re.match(r"^\s*[-*]\s+(.*)", line)
+            if mb:                                      # 글머리 목록
+                self._docx_runs(doc.add_paragraph(style="List Bullet"), mb.group(1))
+                i += 1
+                continue
+            self._docx_runs(doc.add_paragraph(), line)  # 일반 단락
+            i += 1
+        ts = datetime.now().strftime("%Y-%m-%d_%H%M")
+        path = filedialog.asksaveasfilename(
+            title="Word 저장 위치·파일명 선택",
+            initialdir=OUT_DIR, initialfile=f"{ts}_생성문서.docx",
+            defaultextension=".docx",
+            filetypes=[("Word 문서", "*.docx"), ("모든 파일", "*.*")])
+        if not path:
+            self._sys("내보내기를 취소했습니다.")
+            return
+        try:
+            doc.save(path)
+            self._sys(f"📤 Word 저장됨 — 엽니다:\n   {path}")
+            self._open_file(path)
+        except Exception as e:
+            self._warn(f"Word 저장 오류: {e}")
+
+    def _docx_runs(self, paragraph, text):
+        """단락 안의 **굵게**를 굵은 run으로 나눠 넣는다(남은 마크다운 기호는 제거)."""
+        text = text.replace("`", "")
+        for part in re.split(r"(\*\*.+?\*\*)", text):
+            if len(part) >= 4 and part.startswith("**") and part.endswith("**"):
+                paragraph.add_run(part[2:-2]).bold = True
+            elif part:
+                paragraph.add_run(part.replace("**", ""))
+
+    def _docx_table(self, doc, rows):
+        """마크다운 표 행들을 docx 표로 만든다(첫 행=헤더, 구분행 ---는 무시)."""
+        def cells(r):
+            return [c.strip() for c in r.strip().strip("|").split("|")]
+        data = [cells(r) for r in rows
+                if not re.match(r"^\s*\|?[\s:|-]+\|?\s*$", r)]   # |---|---| 제거
+        if not data:
+            return
+        ncol = max(len(r) for r in data)
+        table = doc.add_table(rows=0, cols=ncol)
+        try:
+            table.style = "Table Grid"
+        except Exception:
+            pass
+        for ri, row in enumerate(data):
+            cellrow = table.add_row().cells
+            for ci in range(ncol):
+                para = cellrow[ci].paragraphs[0]
+                self._docx_runs(para, row[ci] if ci < len(row) else "")
+                if ri == 0:                              # 헤더 굵게
+                    for run in para.runs:
+                        run.bold = True
+        doc.add_paragraph()                              # 표 뒤 간격
 
     def save_conv(self):
         if not self.history:
             self._sys("저장할 대화가 없습니다."); return
         ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        path = os.path.join(CONV_DIR, f"conv_{ts}.json")
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(self.history, f, ensure_ascii=False, indent=2)
-        self._sys(f"💾 저장됨: {path}")
+        path = filedialog.asksaveasfilename(
+            title="대화 저장 — 위치·파일명 선택",
+            initialdir=CONV_DIR, initialfile=f"conv_{ts}.json",
+            defaultextension=".json",
+            filetypes=[("대화 파일", "*.json"), ("모든 파일", "*.*")])
+        if not path:
+            self._sys("저장을 취소했습니다."); return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self.history, f, ensure_ascii=False, indent=2)
+            self._sys(f"💾 저장됨: {path}")
+        except Exception as e:
+            self._warn(f"저장 오류: {e}")
 
     def load_conv(self):
         path = filedialog.askopenfilename(initialdir=CONV_DIR, title="대화 불러오기",
@@ -548,15 +782,15 @@ class App(tk.Tk):
         self.inp.delete("1.0", "end")
         self._dispatch(text)
 
-    def _dispatch(self, content, display=None, mode=None):
-        # 이번 턴에만 쓰는 모드(예: 📤 내보내기는 'code'로 처리). 평소엔 선택된 모드.
-        self._turn_mode = mode or self.mode
+    def _dispatch(self, content, display=None):
         self._append("\n나 ▸ ", "user")
         self._append((display or content) + "\n", "bot")
         self.history.append({"role": "user", "content": content})
+        self._cancel = False
         self.streaming = True
-        self.send_btn.configure(text="...")
+        self._set_stop_button()
         self._append("\nAI ▸\n", "label")
+        self.chat.see("end")          # 새 턴은 항상 맨 아래로 (이후 스트리밍은 스마트 추적)
         self._ans_start = self.chat.index("end-1c")  # 답변 시작 위치 기록
         self._first_chunk = True
         self._load_i = 0
@@ -570,16 +804,19 @@ class App(tk.Tk):
         if not getattr(self, "_first_chunk", False) or not self.streaming:
             return
         frames = ["입력중", "입력중 ·", "입력중 · ·", "입력중 · · ·"]
+        follow = self._at_bottom()
         self.chat.configure(state="normal")
         self.chat.delete(self._ans_start, "end-1c")
         self.chat.insert("end", frames[self._load_i % len(frames)], "sys")
-        self.chat.see("end")
+        if follow:
+            self.chat.see("end")
         self.chat.configure(state="disabled")
         self._load_i += 1
         self.after(400, self._animate_loading)
 
     def _worker(self):
-        for piece in core.stream_answer(self.client, self.model_key, self._turn_mode, self.history):
+        for piece in core.stream_answer(self.client, self.model_key, self.mode, self.history,
+                                        should_cancel=lambda: self._cancel):
             if isinstance(piece, tuple) and piece[0] == "__error__":
                 self.q.put(("err", piece[1]))
             else:
@@ -597,10 +834,7 @@ class App(tk.Tk):
                         self.chat.configure(state="disabled")
                         self._first_chunk = False
                     self._answer_acc.append(data)        # 원본 보관
-                    if self._turn_mode == "code":        # HTML 내보내기는 원본 그대로
-                        self._append(data, "code")
-                    else:                                # 그 외엔 ** 제거
-                        self._append(data.replace("**", ""), "bot")
+                    self._append(data.replace("**", ""), "bot")   # 스트리밍 중 ** 제거
                 elif kind == "err":
                     if self._first_chunk:        # 대기표시 제거
                         self.chat.configure(state="normal")
@@ -618,20 +852,24 @@ class App(tk.Tk):
 
     def _finish(self):
         self.streaming = False
-        self.send_btn.configure(text="보내기")
+        self._set_send_button()
         answer = "".join(self._answer_acc)
         if not answer:
+            if self._cancel:                      # 첫 글자 전에 중지
+                self._sys("답변을 중지했습니다.")
+                self._cancel = False
             return
         self.history.append({"role": "assistant", "content": answer})
         # 스트리밍된 원본(마크다운 기호 포함)을 지우고 깔끔하게 다시 렌더
         self.chat.configure(state="normal")
         self.chat.delete(self._ans_start, "end-1c")
         self.chat.configure(state="disabled")
-        if self._turn_mode == "code":
-            self._append(answer, "code")          # HTML 원본은 서식 보존(렌더 안 함)
-        else:
-            self._render_markdown(answer)
-        if self._turn_mode in ("design", "review"):
+        self._render_markdown(answer)
+        if self._cancel:                          # 사용자가 중간에 멈춤 → 부분 답변 유지
+            self._append("\n· 답변을 중지했습니다.\n", "warn")
+            self._cancel = False
+            return
+        if self.mode in ("design", "review"):
             self._append(prompts.CITATION_NOTE + "\n", "warn")
         cjk = core.check_cjk(answer)
         if cjk:
@@ -640,9 +878,9 @@ class App(tk.Tk):
                 self._append("   " + item + "\n", "warn")
             if len(cjk) > 10:
                 self._append(f"   …외 {len(cjk) - 10}개\n", "warn")
-        if self._turn_mode in ("design", "review"):
+        if self.mode in ("design", "review"):
             ts = datetime.now().strftime("%Y-%m-%d_%H%M")
-            label = prompts.MODE_LABELS[self._turn_mode]
+            label = prompts.MODE_LABELS[self.mode]
             path = os.path.join(OUT_DIR, f"{ts}_{label}.md")
             try:
                 with open(path, "w", encoding="utf-8") as f:
@@ -651,20 +889,41 @@ class App(tk.Tk):
             except Exception:
                 pass
 
-        # 📤 내보내기 요청이었으면 결과를 HTML로 저장·열기
-        if getattr(self, "_export_after", False):
-            self._export_after = False
-            self._save_html(answer)
-
     # ════════ 출력 헬퍼 ════════
+    def _at_bottom(self):
+        """대화창 뷰가 맨 아래(근처)인지 — True면 새 내용을 따라 내려간다."""
+        try:
+            return self.chat.yview()[1] >= 0.999
+        except Exception:
+            return True
+
+    def _on_chat_scroll(self, lo, hi):
+        """스크롤바 갱신 + 위로 스크롤됐을 때만 '맨 아래로' 버튼 표시."""
+        self._sb.set(lo, hi)
+        try:
+            if float(hi) >= 0.999:
+                self._jump_btn.place_forget()
+            else:
+                self._jump_btn.place(relx=0.5, rely=1.0, anchor="s", y=-10)
+                self._jump_btn.lift()
+        except Exception:
+            pass
+
+    def _jump_to_bottom(self):
+        self.chat.see("end")
+        self._jump_btn.place_forget()
+
     def _append(self, text, tag):
+        follow = self._at_bottom()              # 삽입 전 위치 판단
         self.chat.configure(state="normal")
         self.chat.insert("end", text, tag)
-        self.chat.see("end")
+        if follow:                              # 바닥에 있었을 때만 따라감
+            self.chat.see("end")
         self.chat.configure(state="disabled")
 
     def _render_markdown(self, text):
         """마크다운 기호를 실제 서식으로 바꿔 깔끔하게 출력 (** → 굵게, # → 제목, - → •)."""
+        follow = self._at_bottom()
         self.chat.configure(state="normal")
         for raw in text.split("\n"):
             line = raw.rstrip()
@@ -678,7 +937,8 @@ class App(tk.Tk):
                 self.chat.insert("end", mb.group(1) + "• ", "bot")
                 self._inline(mb.group(2)); self.chat.insert("end", "\n"); continue
             self._inline(line); self.chat.insert("end", "\n")
-        self.chat.see("end")
+        if follow:
+            self.chat.see("end")
         self.chat.configure(state="disabled")
 
     def _inline(self, text, tag="bot"):
