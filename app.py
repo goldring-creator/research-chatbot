@@ -76,12 +76,13 @@ class _Tooltip:
         self.tip = tw = tk.Toplevel(self.widget)
         tw.wm_overrideredirect(True)
         tw.wm_geometry(f"+{x}+{y}")
-        try:
-            tw.attributes("-topmost", True)
-        except Exception:
-            pass
         tk.Label(tw, text=self.text, bg="#1f2630", fg="#e6edf3",
                  font=(MONO, 9), padx=8, pady=4, relief="solid", bd=1).pack()
+        try:
+            tw.attributes("-topmost", True)
+            tw.lift()                 # 항상 위 창보다도 앞으로
+        except Exception:
+            pass
 
     def hide(self, e=None):
         if self.tip:
@@ -94,8 +95,8 @@ class App(tk.Tk):
         super().__init__()
         self.title("연구설계 챗봇")
         self.configure(bg=C_BG)
-        self.geometry("480x680")
-        self.minsize(420, 560)
+        self.geometry("640x720")
+        self.minsize(600, 560)
         self.attributes("-topmost", True)
         self.pinned = True
 
@@ -217,12 +218,20 @@ class App(tk.Tk):
 
         bar = tk.Frame(self, bg=C_BG2)
         bar.pack(fill="x")
-        self.mode_btn = self._btn(bar, self._mode_label(), self.cycle_mode, fg=C_GREEN)
-        self.mode_btn.pack(side="left", padx=1, pady=2)
+        left = tk.Frame(bar, bg=C_BG2)
+        left.pack(side="left", padx=8, pady=6)
+        right = tk.Frame(bar, bg=C_BG2)
+        right.pack(side="right", padx=8, pady=6)
+
+        # 좌측: 모드 / 모델
+        self.mode_btn = self._btn(left, self._mode_label(), self.cycle_mode, fg=C_GREEN)
+        self.mode_btn.pack(side="left", padx=4)
         _Tooltip(self.mode_btn, "모드 전환 — 설계 / 검토 / 자유문답")
-        self.model_btn = self._btn(bar, self._model_label(), self.cycle_model, fg=C_BLUE)
-        self.model_btn.pack(side="left", padx=1, pady=2)
+        self.model_btn = self._btn(left, self._model_label(), self.cycle_model, fg=C_BLUE)
+        self.model_btn.pack(side="left", padx=4)
         _Tooltip(self.model_btn, "AI 모델 전환 — DeepSeek(정밀) / Nemotron(빠름)")
+
+        # 우측: 아이콘 (균등 간격)
         for txt, cmd, tip in [
             ("📎", self.attach_file, "파일 첨부 — 초안을 검토 모드로 분석"),
             ("💾", self.save_conv, "현재 대화 저장"),
@@ -230,12 +239,36 @@ class App(tk.Tk):
             ("📌", self.toggle_pin, "항상 위에 고정 켜기/끄기"),
             ("🔑", self.change_key, "API 키 변경"),
         ]:
-            b = self._btn(bar, txt, cmd)
-            b.pack(side="left", padx=1, pady=2)
+            b = self._btn(right, txt, cmd, padx=9)
+            b.pack(side="left", padx=5)
             _Tooltip(b, tip)
 
+        # 입력 영역 — 맨 아래 고정 (창을 줄여도 사라지지 않음)
+        sep = tk.Frame(self, bg=C_BORDER, height=1)
+        ibar = tk.Frame(self, bg=C_BG2)
+        ibar.pack(side="bottom", fill="x")
+        sep.pack(side="bottom", fill="x")
+        # 보내기 버튼을 먼저 오른쪽에 예약 → 좁아져도 안 잘림
+        self.send_btn = tk.Label(ibar, text="보내기", bg=C_GREEN, fg="#0d1117",
+                                 font=(MONO, 11, "bold"), cursor="hand2", padx=14)
+        self.send_btn.pack(side="right", fill="y", padx=(4, 8), pady=8)
+        self.send_btn.bind("<Button-1>", lambda e: self.send())
+        tk.Label(ibar, text=" 입력 ▸", bg=C_BG2, fg=C_GREEN,
+                 font=(MONO, 11, "bold")).pack(side="left", anchor="n", pady=12)
+        self.inp = tk.Text(ibar, bg=C_BG2, fg=C_TEXT, font=(MONO, 11), height=3,
+                          wrap="word", relief="flat", padx=6, pady=8,
+                          insertbackground=C_TEXT)
+        self.inp.pack(side="left", fill="both", expand=True)
+        self.inp.bind("<Return>", self.on_return)
+        self.inp.bind("<FocusIn>", self._clear_placeholder)
+        self.inp.bind("<FocusOut>", self._restore_placeholder)
+        self._enable_clipboard(self.inp)
+        self._ph_active = False
+        self._set_placeholder()
+
+        # 대화 영역 — 남은 공간을 채움
         wrap = tk.Frame(self, bg=C_BG)
-        wrap.pack(fill="both", expand=True)
+        wrap.pack(side="top", fill="both", expand=True)
         self.chat = tk.Text(wrap, bg=C_BG, fg=C_TEXT, font=(MONO, 11), wrap="word",
                             relief="flat", padx=12, pady=10, insertbackground=C_TEXT,
                             state="disabled", spacing1=2, spacing3=4)
@@ -252,26 +285,6 @@ class App(tk.Tk):
         self.chat.tag_config("b", font=(MONO, 11, "bold"))
         self.chat.tag_config("h", foreground=C_GREEN, font=(MONO, 12, "bold"))
         self.chat.tag_config("hr", foreground=C_BORDER)
-
-        tk.Frame(self, bg=C_BORDER, height=1).pack(fill="x")  # 입력창 구분선
-        ibar = tk.Frame(self, bg=C_BG2)
-        ibar.pack(fill="x")
-        tk.Label(ibar, text=" 입력 ▸", bg=C_BG2, fg=C_GREEN,
-                 font=(MONO, 11, "bold")).pack(side="left", anchor="n", pady=12)
-        self.inp = tk.Text(ibar, bg=C_BG2, fg=C_TEXT, font=(MONO, 11), height=3,
-                          wrap="word", relief="flat", padx=6, pady=8,
-                          insertbackground=C_TEXT)
-        self.inp.pack(side="left", fill="both", expand=True)
-        self.inp.bind("<Return>", self.on_return)
-        self.inp.bind("<FocusIn>", self._clear_placeholder)
-        self.inp.bind("<FocusOut>", self._restore_placeholder)
-        self._enable_clipboard(self.inp)
-        self.send_btn = tk.Label(ibar, text="보내기", bg=C_GREEN, fg="#0d1117",
-                                 font=(MONO, 11, "bold"), cursor="hand2", padx=12)
-        self.send_btn.pack(side="right", fill="y", padx=(4, 6), pady=6)
-        self.send_btn.bind("<Button-1>", lambda e: self.send())
-        self._ph_active = False
-        self._set_placeholder()
 
         self._sys(f"준비 완료. 모드: {prompts.MODE_LABELS[self.mode]} · "
                   f"모델: {core.MODEL_LABELS[self.model_key]}")
@@ -366,7 +379,7 @@ class App(tk.Tk):
         self._sys(f"📂 불러옴 (메시지 {len(self.history)}개)")
 
     # ════════ 입력창 안내문(placeholder) ════════
-    PLACEHOLDER = "연구 아이디어나 질문을 입력하고 Enter ↵   ·   Shift+Enter 줄바꿈"
+    PLACEHOLDER = "대화를 입력해 주세요."
 
     def _set_placeholder(self):
         self.inp.delete("1.0", "end")
