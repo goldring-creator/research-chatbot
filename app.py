@@ -72,7 +72,7 @@ MODE_DESC = {
 }
 
 # ── 버전·업데이트 확인 ──
-APP_VERSION = "0.1.5"
+APP_VERSION = "0.1.7"
 REPO = "goldring-creator/research-chatbot"
 RELEASES_URL = f"https://github.com/{REPO}/releases/latest"
 
