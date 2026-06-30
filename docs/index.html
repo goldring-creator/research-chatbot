@@ -52,6 +52,13 @@
     border-radius:12px;padding:14px 18px;color:#f0d488;font-size:13.5px;margin:8px 0 26px}
   footer{text-align:center;color:var(--dim);font-size:12px;padding:20px 0 6px}
   b{color:#fff}
+
+  .shots{margin-top:16px;display:flex;flex-direction:column;gap:14px}
+  .shots-title{font-size:13.5px;font-weight:800;color:var(--blue)}
+  .shots figure{margin:0;border:1px solid var(--border);border-radius:12px;overflow:hidden;background:#0d1117}
+  .shots figcaption{font-size:13px;color:var(--text);padding:9px 12px;border-bottom:1px solid var(--border)}
+  .shots img{width:100%;display:block}
+  .shots-note{font-size:12px;color:var(--dim);margin-top:2px}
 </style>
 </head>
 <body>
@@ -141,6 +148,16 @@
           <li>만들어진 <span class="key">nvapi-...</span> 키 <b>Copy</b></li>
           <li>앱 입력칸에 붙여넣고 <b>[저장하고 시작]</b></li>
         </ol>
+      </div>
+
+      <div class="shots">
+        <div class="shots-title">📷 참고 화면 (순서대로)</div>
+        <figure><figcaption>① 쿠키 안내가 뜨면 ‘Accept All’ 클릭</figcaption><img src="img/01_cookie.png" alt="쿠키 동의"></figure>
+        <figure><figcaption>② 검색창에 ‘deepseek’ 검색 후 deepseek-v4-pro 선택</figcaption><img src="img/02_search.png" alt="모델 검색"></figure>
+        <figure><figcaption>③ ‘Before You Use AI Models’ 창에서 ‘Acknowledge &amp; Continue’ 클릭</figcaption><img src="img/03_acknowledge.png" alt="이용 동의"></figure>
+        <figure><figcaption>④ ‘Sign In’ 창에 이메일 입력 후 ‘Next’ → 로그인(인증 메일 확인)</figcaption><img src="img/04_signin.png" alt="로그인"></figure>
+        <figure><figcaption>⑤ Build 탭에서 ‘Generate API Key’ 클릭 → 생성된 키 옆 ‘Copy’</figcaption><img src="img/05_generate.png" alt="API 키 발급"></figure>
+        <p class="shots-note">※ 발급된 키가 보이는 화면은 보안을 위해 첨부하지 않았습니다. ‘Copy’로 복사한 nvapi- 키를 앱에 붙여넣으세요.</p>
       </div>
     </div>
   </div>
