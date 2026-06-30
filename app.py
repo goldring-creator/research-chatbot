@@ -460,26 +460,95 @@ class App(tk.Tk):
         link.bind("<Button-1>", lambda e: webbrowser.open(NVIDIA_URL))
 
     def attach_file(self):
+        if self.streaming:
+            self._sys("진행이 끝난 뒤 파일을 첨부해 주세요.")
+            return
         paths = filedialog.askopenfilenames(
             title="검토할 파일 선택 (여러 개 가능)",
-            filetypes=[("지원 문서", "*.txt *.md *.pdf *.docx"), ("모든 파일", "*.*")])
+            filetypes=[("지원 문서·이미지", "*.txt *.md *.pdf *.docx *.png *.jpg *.jpeg"),
+                       ("모든 파일", "*.*")])
         if not paths:
             return
+        # 스캔 PDF·이미지는 OCR(네트워크)이 필요해 시간이 걸리므로 백그라운드에서 읽는다
+        self._cancel = False
+        self.streaming = True
+        self._set_stop_button()
+        self._sys("📎 파일 읽는 중…  (스캔 문서·이미지는 OCR로 처리되어 시간이 걸릴 수 있습니다)")
+        self._attach_line = None     # OCR 진행 상황을 갱신 표시할 줄
+        threading.Thread(target=self._attach_worker, args=(list(paths),), daemon=True).start()
+        self.after(60, self._attach_poll)
+
+    def _attach_worker(self, paths):
+        key = core.load_key()
         parts, names = [], []
         for p in paths:
-            content, err = core.read_file(p)
+            if self._cancel:
+                break
+            base = os.path.basename(p)
+            content, err = core.read_file_ocr(
+                p, key,
+                progress=lambda m, b=base: self.q.put(("attach_prog", f"{b} — {m}")),
+                should_cancel=lambda: self._cancel)
             if err:
-                self._warn(f"{os.path.basename(p)}: {err}")
+                self.q.put(("attach_warn", f"{base}: {err}"))
                 continue
-            parts.append(f"[파일: {os.path.basename(p)}]\n{content}")
-            names.append(os.path.basename(p))
+            parts.append(f"[파일: {base}]\n{content}")
+            names.append(base)
+        self.q.put(("attach_done", (parts, names)))
+
+    def _attach_poll(self):
+        try:
+            while True:
+                kind, data = self.q.get_nowait()
+                if kind == "attach_prog":
+                    self._set_status_line("🔍 " + data)
+                elif kind == "attach_warn":
+                    self._clear_status_line()
+                    self._warn(data)
+                elif kind == "attach_done":
+                    self._clear_status_line()
+                    self._finish_attach(data)
+                    return
+        except queue.Empty:
+            pass
+        if self.streaming:
+            self.after(60, self._attach_poll)
+
+    def _finish_attach(self, data):
+        parts, names = data
+        self.streaming = False
+        self._set_send_button()
+        if self._cancel:
+            self._cancel = False
+            self._sys("파일 읽기를 중지했습니다.")
+            return
         if not parts:
+            self._sys("읽어들인 파일이 없습니다.")
             return
         self.mode = "review"
         self.mode_btn.configure(text=self._mode_label())
         self._sys(f"📎 {len(names)}개 파일 읽음 → 검토 모드: {', '.join(names)}")
         self._dispatch("다음 원고를 검토해줘:\n\n" + "\n\n".join(parts),
                        display=f"[첨부] {', '.join(names)} 검토 요청")
+
+    def _set_status_line(self, text):
+        """OCR 진행 등 갱신되는 상태 한 줄 — 같은 줄을 지우고 다시 쓴다."""
+        self.chat.configure(state="normal")
+        if getattr(self, "_attach_line", None):
+            self.chat.delete(self._attach_line, "end-1c")
+        else:
+            self.chat.insert("end", "\n")
+            self._attach_line = self.chat.index("end-1c")
+        self.chat.insert("end", text)
+        self.chat.see("end")
+        self.chat.configure(state="disabled")
+
+    def _clear_status_line(self):
+        if getattr(self, "_attach_line", None):
+            self.chat.configure(state="normal")
+            self.chat.delete(self._attach_line, "end-1c")
+            self.chat.configure(state="disabled")
+            self._attach_line = None
 
     # ════════ 내보내기 (HTML / Word) ════════
     def open_export_menu(self):
