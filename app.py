@@ -3,16 +3,15 @@
 app.py — 사회과학 연구설계 챗봇 (데스크탑 앱)
 NVIDIA 무료 API + 모래시계 연구 로직. 터미널 느낌의 플로팅 채팅창.
 각 사용자가 본인의 무료 NVIDIA 키를 입력해 사용한다(키는 본인 컴퓨터에만 저장).
-
-실행: python3 app.py
 """
 
 import os
-import sys
+import re
 import json
 import queue
 import threading
 import platform
+import webbrowser
 from datetime import datetime
 
 import tkinter as tk
@@ -21,7 +20,7 @@ from tkinter import filedialog, messagebox
 import core
 import prompts
 
-# ── 데이터 저장 위치 (쓰기 가능한 홈 폴더) ──
+# ── 데이터 저장 위치 ──
 DATA_DIR = os.path.expanduser("~/Documents/ResearchChatbot")
 OUT_DIR = os.path.join(DATA_DIR, "outputs")
 CONV_DIR = os.path.join(DATA_DIR, "conversations")
@@ -35,12 +34,11 @@ C_BORDER = "#30363d"
 C_TEXT = "#e6edf3"
 C_DIM = "#8b949e"
 C_GREEN = "#3fb950"
+C_GREEN_D = "#2ea043"
 C_BLUE = "#58a6ff"
 C_AMBER = "#e3b341"
 C_RED = "#f85149"
-C_PURPLE = "#bc8cff"
 
-# ── 폰트 (OS별 모노스페이스) ──
 if platform.system() == "Darwin":
     MONO = "Menlo"
 elif platform.system() == "Windows":
@@ -48,16 +46,47 @@ elif platform.system() == "Windows":
 else:
     MONO = "DejaVu Sans Mono"
 
-# ── 키 발급 온보딩 안내문 ──
+NVIDIA_URL = "https://build.nvidia.com"
+
+# ── 키 발급 안내 (1) 2) 3) 순서) ──
 GUIDE_STEPS = [
-    "① 웹브라우저에서  build.nvidia.com  접속",
-    "② 우측 상단 Login → 구글/이메일로 로그인 (계정 가입 절차 최소)",
-    "③ 빨간 줄이 보이면 Verify(계정 인증) 클릭",
-    "④ 아무 모델이나 열기 (예: deepseek 검색)",
-    "⑤ Build 탭 → Generate API Key 클릭",
-    "⑥ 만들어진  nvapi-...  키를 Copy",
-    "⑦ 아래 칸에 붙여넣고 [저장하고 시작]",
+    "1)  아래 [NVIDIA 사이트 열기]를 눌러 로그인 (구글·이메일)",
+    "2)  화면 위에 Verify가 보이면 눌러 계정 인증",
+    "3)  아무 모델이나 열기 (예: 검색창에 deepseek)",
+    "4)  Build 탭의 [Generate API Key] 클릭",
+    "5)  만들어진  nvapi-...  키를 [Copy]",
+    "6)  아래 칸에 붙여넣고 [저장하고 시작]",
 ]
+
+
+class _Tooltip:
+    """아이콘에 커서를 올리면 설명을 띄운다 (Mac·Windows 공통)."""
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tip = None
+        widget.bind("<Enter>", self.show, add="+")
+        widget.bind("<Leave>", self.hide, add="+")
+
+    def show(self, e=None):
+        if self.tip:
+            return
+        x = self.widget.winfo_rootx() + 6
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        self.tip = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        try:
+            tw.attributes("-topmost", True)
+        except Exception:
+            pass
+        tk.Label(tw, text=self.text, bg="#1f2630", fg="#e6edf3",
+                 font=(MONO, 9), padx=8, pady=4, relief="solid", bd=1).pack()
+
+    def hide(self, e=None):
+        if self.tip:
+            self.tip.destroy()
+            self.tip = None
 
 
 class App(tk.Tk):
@@ -65,9 +94,9 @@ class App(tk.Tk):
         super().__init__()
         self.title("연구설계 챗봇")
         self.configure(bg=C_BG)
-        self.geometry("460x620")
-        self.minsize(380, 480)
-        self.attributes("-topmost", True)  # 항상 위 (위젯 느낌)
+        self.geometry("480x680")
+        self.minsize(420, 560)
+        self.attributes("-topmost", True)
         self.pinned = True
 
         self.mode = "design"
@@ -86,41 +115,89 @@ class App(tk.Tk):
 
         self.setup_hotkey()
 
+    # ── 복사·붙여넣기 단축키 활성화 (macOS Tk 보완) ──
+    def _enable_clipboard(self, w):
+        for mod in ("Command", "Control"):
+            w.bind(f"<{mod}-v>", lambda e: (e.widget.event_generate("<<Paste>>"), "break")[1])
+            w.bind(f"<{mod}-c>", lambda e: (e.widget.event_generate("<<Copy>>"), "break")[1])
+            w.bind(f"<{mod}-x>", lambda e: (e.widget.event_generate("<<Cut>>"), "break")[1])
+            w.bind(f"<{mod}-a>", self._select_all)
+
+    def _select_all(self, e):
+        w = e.widget
+        try:
+            w.select_range(0, "end")        # Entry
+        except Exception:
+            w.tag_add("sel", "1.0", "end-1c")  # Text
+        return "break"
+
+    # ── 라벨 기반 버튼 (macOS에서도 색이 제대로 나옴) ──
+    def _btn(self, parent, text, cmd, fg=C_TEXT, bg=C_BG2, hover=C_BORDER,
+             font=None, pady=6, padx=10):
+        lbl = tk.Label(parent, text=text, fg=fg, bg=bg, cursor="hand2",
+                       font=font or (MONO, 10), padx=padx, pady=pady)
+        lbl.bind("<Button-1>", lambda e: cmd())
+        lbl.bind("<Enter>", lambda e: lbl.configure(bg=hover))
+        lbl.bind("<Leave>", lambda e: lbl.configure(bg=bg))
+        return lbl
+
     # ════════ 온보딩 (키 입력) ════════
     def build_onboarding(self):
         for w in self.winfo_children():
             w.destroy()
-        f = tk.Frame(self, bg=C_BG, padx=22, pady=20)
-        f.pack(fill="both", expand=True)
 
-        tk.Label(f, text="사회과학 연구설계 챗봇", bg=C_BG, fg=C_GREEN,
-                 font=(MONO, 16, "bold")).pack(anchor="w")
-        tk.Label(f, text="NVIDIA 무료 API 기반 · 본인 키로 작동",
-                 bg=C_BG, fg=C_DIM, font=(MONO, 10)).pack(anchor="w", pady=(2, 14))
+        outer = tk.Frame(self, bg=C_BG, padx=26, pady=20)
+        outer.pack(fill="both", expand=True)
 
-        tk.Label(f, text="무료 API 키 발급 방법", bg=C_BG, fg=C_BLUE,
-                 font=(MONO, 11, "bold")).pack(anchor="w")
+        # 맨 아래: 저장 버튼 (먼저 bottom에 배치)
+        bottom = tk.Frame(outer, bg=C_BG)
+        bottom.pack(side="bottom", fill="x")
+        save_btn = tk.Label(bottom, text="저장하고 시작  ▸", bg=C_GREEN, fg="#0d1117",
+                            font=(MONO, 14, "bold"), cursor="hand2", pady=12)
+        save_btn.pack(fill="x", pady=(10, 0))
+        save_btn.bind("<Button-1>", lambda e: self.save_and_start())
+        save_btn.bind("<Enter>", lambda e: save_btn.configure(bg=C_GREEN_D))
+        save_btn.bind("<Leave>", lambda e: save_btn.configure(bg=C_GREEN))
+
+        # 위: 제목 + 안내 + 키 입력
+        top = tk.Frame(outer, bg=C_BG)
+        top.pack(side="top", fill="both", expand=True)
+
+        # 제목 (가운데, 큰 폰트)
+        tk.Label(top, text="🧭  사회과학 연구설계 챗봇", bg=C_BG, fg=C_GREEN,
+                 font=(MONO, 19, "bold")).pack(pady=(6, 2))
+        tk.Label(top, text="NVIDIA 무료 AI · 본인 키로 작동 · 완전 무료",
+                 bg=C_BG, fg=C_DIM, font=(MONO, 10)).pack(pady=(0, 16))
+
+        # 키 발급 방법
+        tk.Label(top, text="📋  무료 API 키 발급 방법 (약 3분)", bg=C_BG, fg=C_BLUE,
+                 font=(MONO, 12, "bold")).pack(anchor="w")
+        steps = tk.Frame(top, bg=C_BG2)
+        steps.pack(fill="x", pady=(6, 10))
         for s in GUIDE_STEPS:
-            tk.Label(f, text=s, bg=C_BG, fg=C_TEXT, font=(MONO, 10),
-                     justify="left", wraplength=400).pack(anchor="w", pady=1)
+            tk.Label(steps, text=s, bg=C_BG2, fg=C_TEXT, font=(MONO, 11),
+                     justify="left", anchor="w", wraplength=400,
+                     padx=12, pady=3).pack(fill="x")
 
-        tk.Label(f, text="\nNVIDIA API 키 붙여넣기:", bg=C_BG, fg=C_TEXT,
-                 font=(MONO, 10, "bold")).pack(anchor="w")
-        self.key_entry = tk.Entry(f, bg=C_BG2, fg=C_TEXT, insertbackground=C_TEXT,
-                                  font=(MONO, 11), relief="flat", width=44)
-        self.key_entry.pack(fill="x", ipady=6, pady=(4, 4))
-        tk.Label(f, text="🔒 이 키는 당신 컴퓨터에만 저장되며 외부로 전송되지 않습니다.",
-                 bg=C_BG, fg=C_DIM, font=(MONO, 9)).pack(anchor="w")
+        # NVIDIA 사이트 열기 (하이퍼링크 버튼)
+        link = tk.Label(top, text="🔗  NVIDIA 사이트 열기  (build.nvidia.com)",
+                        bg=C_BG, fg=C_BLUE, font=(MONO, 11, "underline"),
+                        cursor="hand2")
+        link.pack(anchor="w", pady=(0, 16))
+        link.bind("<Button-1>", lambda e: webbrowser.open(NVIDIA_URL))
 
-        tk.Button(f, text="저장하고 시작", command=self.save_and_start,
-                  bg=C_GREEN, fg="#0d1117", font=(MONO, 12, "bold"),
-                  relief="flat", activebackground="#2ea043",
-                  cursor="hand2").pack(fill="x", ipady=8, pady=(14, 4))
-
-        link = tk.Label(f, text="↗ build.nvidia.com 열기", bg=C_BG, fg=C_BLUE,
-                        font=(MONO, 10, "underline"), cursor="hand2")
-        link.pack(anchor="w")
-        link.bind("<Button-1>", lambda e: self.open_url("https://build.nvidia.com"))
+        # 키 입력칸
+        tk.Label(top, text="🔑  발급받은 API 키 붙여넣기", bg=C_BG, fg=C_TEXT,
+                 font=(MONO, 11, "bold")).pack(anchor="w")
+        self.key_entry = tk.Entry(top, bg="#ffffff", fg="#0d1117",
+                                  insertbackground="#0d1117", font=(MONO, 12),
+                                  relief="flat")
+        self.key_entry.pack(fill="x", ipady=8, pady=(6, 4))
+        self.key_entry.focus_set()
+        self._enable_clipboard(self.key_entry)
+        tk.Label(top, text="🔒 이 키는 당신 컴퓨터에만 저장되며 외부로 전송되지 않습니다.",
+                 bg=C_BG, fg=C_DIM, font=(MONO, 9), wraplength=400,
+                 justify="left").pack(anchor="w")
 
     def save_and_start(self):
         key = self.key_entry.get().strip()
@@ -133,82 +210,80 @@ class App(tk.Tk):
         self.client = core.make_client(key)
         self.build_main()
 
-    def open_url(self, url):
-        import webbrowser
-        webbrowser.open(url)
-
     # ════════ 메인 채팅 화면 ════════
     def build_main(self):
         for w in self.winfo_children():
             w.destroy()
 
-        # 상단 툴바
-        bar = tk.Frame(self, bg=C_BG2, height=40)
+        bar = tk.Frame(self, bg=C_BG2)
         bar.pack(fill="x")
-        self.mode_btn = self._toolbtn(bar, self._mode_label(), self.cycle_mode)
-        self.model_btn = self._toolbtn(bar, self._model_label(), self.cycle_model)
-        self._toolbtn(bar, "📎", self.attach_file, w=3)
-        self._toolbtn(bar, "💾", self.save_conv, w=3)
-        self._toolbtn(bar, "📂", self.load_conv, w=3)
-        self.pin_btn = self._toolbtn(bar, "📌", self.toggle_pin, w=3)
-        self._toolbtn(bar, "❓", self.show_help, w=3)
-        self._toolbtn(bar, "🔑", self.change_key, w=3)
+        self.mode_btn = self._btn(bar, self._mode_label(), self.cycle_mode, fg=C_GREEN)
+        self.mode_btn.pack(side="left", padx=1, pady=2)
+        _Tooltip(self.mode_btn, "모드 전환 — 설계 / 검토 / 자유문답")
+        self.model_btn = self._btn(bar, self._model_label(), self.cycle_model, fg=C_BLUE)
+        self.model_btn.pack(side="left", padx=1, pady=2)
+        _Tooltip(self.model_btn, "AI 모델 전환 — DeepSeek(정밀) / Nemotron(빠름)")
+        for txt, cmd, tip in [
+            ("📎", self.attach_file, "파일 첨부 — 초안을 검토 모드로 분석"),
+            ("💾", self.save_conv, "현재 대화 저장"),
+            ("📂", self.load_conv, "저장한 대화 불러오기"),
+            ("📌", self.toggle_pin, "항상 위에 고정 켜기/끄기"),
+            ("🔑", self.change_key, "API 키 변경"),
+        ]:
+            b = self._btn(bar, txt, cmd)
+            b.pack(side="left", padx=1, pady=2)
+            _Tooltip(b, tip)
 
-        # 대화 영역
         wrap = tk.Frame(self, bg=C_BG)
         wrap.pack(fill="both", expand=True)
-        self.chat = tk.Text(wrap, bg=C_BG, fg=C_TEXT, font=(MONO, 11),
-                            wrap="word", relief="flat", padx=12, pady=10,
-                            insertbackground=C_TEXT, state="disabled",
-                            spacing1=2, spacing3=4)
-        sb = tk.Scrollbar(wrap, command=self.chat.yview, troughcolor=C_BG2)
+        self.chat = tk.Text(wrap, bg=C_BG, fg=C_TEXT, font=(MONO, 11), wrap="word",
+                            relief="flat", padx=12, pady=10, insertbackground=C_TEXT,
+                            state="disabled", spacing1=2, spacing3=4)
+        sb = tk.Scrollbar(wrap, command=self.chat.yview)
         self.chat.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         self.chat.pack(side="left", fill="both", expand=True)
-
         self.chat.tag_config("user", foreground=C_BLUE, font=(MONO, 11, "bold"))
         self.chat.tag_config("bot", foreground=C_TEXT)
         self.chat.tag_config("sys", foreground=C_DIM, font=(MONO, 10))
         self.chat.tag_config("warn", foreground=C_AMBER, font=(MONO, 10))
         self.chat.tag_config("err", foreground=C_RED)
         self.chat.tag_config("label", foreground=C_GREEN, font=(MONO, 10, "bold"))
+        self.chat.tag_config("b", font=(MONO, 11, "bold"))
+        self.chat.tag_config("h", foreground=C_GREEN, font=(MONO, 12, "bold"))
+        self.chat.tag_config("hr", foreground=C_BORDER)
 
-        # 입력 영역
+        tk.Frame(self, bg=C_BORDER, height=1).pack(fill="x")  # 입력창 구분선
         ibar = tk.Frame(self, bg=C_BG2)
         ibar.pack(fill="x")
+        tk.Label(ibar, text=" 입력 ▸", bg=C_BG2, fg=C_GREEN,
+                 font=(MONO, 11, "bold")).pack(side="left", anchor="n", pady=12)
         self.inp = tk.Text(ibar, bg=C_BG2, fg=C_TEXT, font=(MONO, 11), height=3,
-                          wrap="word", relief="flat", padx=10, pady=8,
+                          wrap="word", relief="flat", padx=6, pady=8,
                           insertbackground=C_TEXT)
         self.inp.pack(side="left", fill="both", expand=True)
         self.inp.bind("<Return>", self.on_return)
-        self.inp.bind("<Shift-Return>", lambda e: None)
-        self.send_btn = tk.Button(ibar, text="보내기", command=self.send,
-                                  bg=C_GREEN, fg="#0d1117", font=(MONO, 11, "bold"),
-                                  relief="flat", activebackground="#2ea043",
-                                  cursor="hand2", width=6)
+        self.inp.bind("<FocusIn>", self._clear_placeholder)
+        self.inp.bind("<FocusOut>", self._restore_placeholder)
+        self._enable_clipboard(self.inp)
+        self.send_btn = tk.Label(ibar, text="보내기", bg=C_GREEN, fg="#0d1117",
+                                 font=(MONO, 11, "bold"), cursor="hand2", padx=12)
         self.send_btn.pack(side="right", fill="y", padx=(4, 6), pady=6)
+        self.send_btn.bind("<Button-1>", lambda e: self.send())
+        self._ph_active = False
+        self._set_placeholder()
 
         self._sys(f"준비 완료. 모드: {prompts.MODE_LABELS[self.mode]} · "
                   f"모델: {core.MODEL_LABELS[self.model_key]}")
-        self._sys("연구 아이디어를 입력하거나 📎로 초안을 첨부하세요. (Enter 전송 / Shift+Enter 줄바꿈)")
-        self.inp.focus_set()
-
-    def _toolbtn(self, parent, text, cmd, w=None):
-        b = tk.Button(parent, text=text, command=cmd, bg=C_BG2, fg=C_TEXT,
-                      font=(MONO, 10), relief="flat", activebackground=C_BORDER,
-                      activeforeground=C_TEXT, cursor="hand2", bd=0,
-                      padx=8, pady=8)
-        if w:
-            b.configure(width=w)
-        b.pack(side="left", padx=1, pady=2)
-        return b
+        self._sys("연구 아이디어를 입력하거나 📎로 초안을 첨부하세요. "
+                  "(Enter 전송 / Shift+Enter 줄바꿈)")
 
     def _mode_label(self):
-        return f"모드:{prompts.MODE_LABELS[self.mode]}▾"
+        return f" 모드:{prompts.MODE_LABELS[self.mode]} ▾ "
 
     def _model_label(self):
         short = "DeepSeek" if self.model_key == "deepseek" else "Nemotron"
-        return f"모델:{short}▾"
+        return f" 모델:{short} ▾ "
 
     # ════════ 토글/명령 ════════
     def cycle_mode(self):
@@ -236,21 +311,23 @@ class App(tk.Tk):
     def show_help(self):
         win = tk.Toplevel(self, bg=C_BG)
         win.title("도움말 — 키 발급 방법")
-        win.configure(padx=20, pady=16)
+        win.configure(padx=22, pady=18)
         win.attributes("-topmost", True)
         tk.Label(win, text="무료 NVIDIA API 키 발급 방법", bg=C_BG, fg=C_GREEN,
                  font=(MONO, 13, "bold")).pack(anchor="w", pady=(0, 8))
         for s in GUIDE_STEPS:
-            tk.Label(win, text=s, bg=C_BG, fg=C_TEXT, font=(MONO, 10),
-                     justify="left", wraplength=420).pack(anchor="w", pady=1)
-        tk.Label(win, text="\n명령: 모드/모델 버튼으로 전환, 📎 초안첨부, 💾 저장, 📂 불러오기, 📌 항상위",
-                 bg=C_BG, fg=C_DIM, font=(MONO, 9), wraplength=420,
-                 justify="left").pack(anchor="w")
+            tk.Label(win, text=s, bg=C_BG, fg=C_TEXT, font=(MONO, 11),
+                     justify="left", wraplength=440).pack(anchor="w", pady=1)
+        link = tk.Label(win, text="🔗 build.nvidia.com 열기", bg=C_BG, fg=C_BLUE,
+                        font=(MONO, 11, "underline"), cursor="hand2")
+        link.pack(anchor="w", pady=(8, 0))
+        link.bind("<Button-1>", lambda e: webbrowser.open(NVIDIA_URL))
 
     def attach_file(self):
         path = filedialog.askopenfilename(
             title="검토할 초안 선택",
-            filetypes=[("문서", "*.txt *.md *.pdf *.docx *.hwpx *.hwp *.xlsx"), ("모든 파일", "*.*")])
+            filetypes=[("문서", "*.txt *.md *.pdf *.docx *.hwpx *.hwp *.xlsx"),
+                       ("모든 파일", "*.*")])
         if not path:
             return
         content, err = core.read_file(path)
@@ -263,7 +340,6 @@ class App(tk.Tk):
         self._dispatch(f"다음 원고를 검토해줘:\n\n{content}",
                        display=f"[첨부] {os.path.basename(path)} 검토 요청")
 
-    # ════════ 대화 저장/불러오기 ════════
     def save_conv(self):
         if not self.history:
             self._sys("저장할 대화가 없습니다."); return
@@ -289,12 +365,33 @@ class App(tk.Tk):
                 self._append("\nAI ▸\n", "label"); self._append(m["content"] + "\n", "bot")
         self._sys(f"📂 불러옴 (메시지 {len(self.history)}개)")
 
+    # ════════ 입력창 안내문(placeholder) ════════
+    PLACEHOLDER = "연구 아이디어나 질문을 입력하고 Enter ↵   ·   Shift+Enter 줄바꿈"
+
+    def _set_placeholder(self):
+        self.inp.delete("1.0", "end")
+        self.inp.insert("1.0", self.PLACEHOLDER)
+        self.inp.configure(fg=C_DIM)
+        self._ph_active = True
+
+    def _clear_placeholder(self, e=None):
+        if getattr(self, "_ph_active", False):
+            self.inp.delete("1.0", "end")
+            self.inp.configure(fg=C_TEXT)
+            self._ph_active = False
+
+    def _restore_placeholder(self, e=None):
+        if not self.inp.get("1.0", "end").strip():
+            self._set_placeholder()
+
     # ════════ 전송/스트리밍 ════════
     def on_return(self, event):
         self.send()
         return "break"
 
     def send(self):
+        if getattr(self, "_ph_active", False):
+            return
         text = self.inp.get("1.0", "end").strip()
         if not text or self.streaming:
             return
@@ -306,11 +403,11 @@ class App(tk.Tk):
         self._append((display or content) + "\n", "bot")
         self.history.append({"role": "user", "content": content})
         self.streaming = True
-        self.send_btn.configure(state="disabled", text="...")
+        self.send_btn.configure(text="...")
         self._append("\nAI ▸\n", "label")
+        self._ans_start = self.chat.index("end-1c")  # 답변 시작 위치 기록
         self._answer_acc = []
-        t = threading.Thread(target=self._worker, daemon=True)
-        t.start()
+        threading.Thread(target=self._worker, daemon=True).start()
         self.after(40, self._poll)
 
     def _worker(self):
@@ -340,17 +437,18 @@ class App(tk.Tk):
 
     def _finish(self):
         self.streaming = False
-        self.send_btn.configure(state="normal", text="보내기")
+        self.send_btn.configure(text="보내기")
         answer = "".join(self._answer_acc)
         if not answer:
             return
         self.history.append({"role": "assistant", "content": answer})
-
-        # 인용 경고 (설계·검토)
+        # 스트리밍된 원본(마크다운 기호 포함)을 지우고 깔끔하게 다시 렌더
+        self.chat.configure(state="normal")
+        self.chat.delete(self._ans_start, "end-1c")
+        self.chat.configure(state="disabled")
+        self._render_markdown(answer)
         if self.mode in ("design", "review"):
             self._append(prompts.CITATION_NOTE + "\n", "warn")
-
-        # 한자/가나 검사
         cjk = core.check_cjk(answer)
         if cjk:
             self._append("\n⚠️ 한자/가나 의심 문자 발견 (한글 교체 권장):\n", "warn")
@@ -358,8 +456,6 @@ class App(tk.Tk):
                 self._append("   " + item + "\n", "warn")
             if len(cjk) > 10:
                 self._append(f"   …외 {len(cjk) - 10}개\n", "warn")
-
-        # 설계·검토 자동 저장
         if self.mode in ("design", "review"):
             ts = datetime.now().strftime("%Y-%m-%d_%H%M")
             label = prompts.MODE_LABELS[self.mode]
@@ -378,22 +474,50 @@ class App(tk.Tk):
         self.chat.see("end")
         self.chat.configure(state="disabled")
 
+    def _render_markdown(self, text):
+        """마크다운 기호를 실제 서식으로 바꿔 깔끔하게 출력 (** → 굵게, # → 제목, - → •)."""
+        self.chat.configure(state="normal")
+        for raw in text.split("\n"):
+            line = raw.rstrip()
+            m = re.match(r"^(#{1,6})\s*(.*)", line)
+            if m:                                   # 제목
+                self._inline(m.group(2), tag="h"); self.chat.insert("end", "\n"); continue
+            if re.match(r"^\s*([-*_])(\s*\1){2,}\s*$", line):  # 구분선
+                self.chat.insert("end", "─" * 30 + "\n", "hr"); continue
+            mb = re.match(r"^(\s*)[-*]\s+(.*)", line)
+            if mb:                                  # 글머리
+                self.chat.insert("end", mb.group(1) + "• ", "bot")
+                self._inline(mb.group(2)); self.chat.insert("end", "\n"); continue
+            self._inline(line); self.chat.insert("end", "\n")
+        self.chat.see("end")
+        self.chat.configure(state="disabled")
+
+    def _inline(self, text, tag="bot"):
+        """줄 안의 **굵게**를 처리하고 남은 마크다운 기호(`)는 제거."""
+        for part in re.split(r"(\*\*.+?\*\*)", text):
+            if len(part) > 4 and part.startswith("**") and part.endswith("**"):
+                self.chat.insert("end", part[2:-2], "b" if tag == "bot" else tag)
+            else:
+                self.chat.insert("end", part.replace("`", ""), tag)
+
     def _sys(self, text):
         self._append("\n· " + text + "\n", "sys")
 
     def _warn(self, text):
         self._append("\n⚠️ " + text + "\n", "warn")
 
-    # ════════ 전역 단축키 (선택) ════════
+    # ════════ 전역 단축키 (기본 꺼짐 — macOS 크래시 방지) ════════
+    # 켜려면 환경변수 RC_HOTKEY=1 로 실행 + macOS 입력 모니터링 권한 허용.
     def setup_hotkey(self):
+        if os.environ.get("RC_HOTKEY") != "1":
+            return
         try:
             from pynput import keyboard
         except Exception:
-            return  # pynput 없으면 단축키 비활성 (앱은 정상 작동)
+            return
 
         def toggle():
             self.after(0, self._toggle_window)
-
         try:
             combo = "<cmd>+<shift>+r" if platform.system() == "Darwin" else "<ctrl>+<shift>+r"
             self._hk = keyboard.GlobalHotKeys({combo: toggle})
@@ -403,7 +527,7 @@ class App(tk.Tk):
             pass
 
     def _toggle_window(self):
-        if self.state() == "withdrawn" or not self.winfo_viewable():
+        if not self.winfo_viewable():
             self.deiconify(); self.lift(); self.focus_force()
         else:
             self.withdraw()
