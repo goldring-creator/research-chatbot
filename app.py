@@ -330,10 +330,7 @@ class App(tk.Tk):
         self.chat.configure(yscrollcommand=self._on_chat_scroll)
         self._sb.pack(side="right", fill="y")
         self.chat.pack(side="left", fill="both", expand=True)
-        # 위로 스크롤해 읽는 중일 때만 나타나는 '맨 아래로' 버튼 (처음엔 숨김)
-        self._jump_btn = tk.Label(card, text="↓ 맨 아래로", bg=C_GREEN, fg="#0d1117",
-                                  font=(MONO, 9, "bold"), cursor="hand2", padx=8, pady=3)
-        self._jump_btn.bind("<Button-1>", lambda e: self._jump_to_bottom())
+        self._enable_copy(self.chat)   # 답변 드래그 선택·복사·전체 선택 허용
         self.chat.tag_config("user", foreground=C_BLUE, font=(MONO, 11, "bold"))
         self.chat.tag_config("bot", foreground=C_TEXT)
         self.chat.tag_config("sys", foreground=C_DIM, font=(MONO, 10))
@@ -522,6 +519,7 @@ class App(tk.Tk):
         self._sys(f"📤 {label} 문서 생성 중…  (중지하려면 ■ 중지 또는 Esc)")
         self._exp_start = self.chat.index("end-1c")
         self._exp_load_i = 0
+        self._retry_msg = None
         threading.Thread(target=self._export_worker, args=(msgs,), daemon=True).start()
         self.after(40, self._export_poll)
         self._animate_export()
@@ -531,6 +529,8 @@ class App(tk.Tk):
                                         should_cancel=lambda: self._cancel):
             if isinstance(piece, tuple) and piece[0] == "__error__":
                 self.q.put(("err", piece[1]))
+            elif isinstance(piece, tuple) and piece[0] == "__retry__":
+                self.q.put(("retry", piece[1:]))
             else:
                 self.q.put(("chunk", piece))
         self.q.put(("done", None))
@@ -541,6 +541,11 @@ class App(tk.Tk):
                 kind, data = self.q.get_nowait()
                 if kind == "chunk":
                     self._exp_acc.append(data)        # 화면엔 출력하지 않음
+                elif kind == "retry":
+                    wait, attempt, total = data
+                    self._retry_msg = (
+                        f"요청이 많아 약 {wait}초 후 자동으로 다시 시도합니다 (재시도 {attempt}/{total})"
+                    )
                 elif kind == "err":
                     self._exp_err = data
                 elif kind == "done":
@@ -554,11 +559,13 @@ class App(tk.Tk):
     def _animate_export(self):
         if not self.streaming or self._export_kind is None:
             return
+        retry = getattr(self, "_retry_msg", None)
+        base = ("   " + retry + " ") if retry else "   생성중 "
         frames = ["·", "· ·", "· · ·", "· · · ·"]
         follow = self._at_bottom()
         self.chat.configure(state="normal")
         self.chat.delete(self._exp_start, "end-1c")
-        self.chat.insert("end", "   생성중 " + frames[self._exp_load_i % len(frames)], "sys")
+        self.chat.insert("end", base + frames[self._exp_load_i % len(frames)], "sys")
         if follow:
             self.chat.see("end")
         self.chat.configure(state="disabled")
@@ -579,7 +586,7 @@ class App(tk.Tk):
             self._sys("내보내기를 취소했습니다.")
             return
         if self._exp_err:
-            self._warn(f"내보내기 오류: {self._exp_err}")
+            self._warn(core.friendly_error(self._exp_err))
             self._exp_err = None
             return
         answer = "".join(self._exp_acc)
@@ -590,6 +597,7 @@ class App(tk.Tk):
             self._save_html(answer)
         else:
             self._save_docx(answer)
+        self._notify("문서 생성 완료", "문서 생성이 완료되었습니다.")
 
     def _open_file(self, path):
         """저장한 파일을 기본 프로그램으로 연다(브라우저·Word 등)."""
@@ -795,6 +803,7 @@ class App(tk.Tk):
         self._first_chunk = True
         self._load_i = 0
         self._answer_acc = []
+        self._retry_msg = None
         threading.Thread(target=self._worker, daemon=True).start()
         self.after(40, self._poll)
         self._animate_loading()   # 점멸 로딩 표시 시작
@@ -803,7 +812,8 @@ class App(tk.Tk):
         """첫 글자가 오기 전까지 '입력중 …'을 점멸 애니메이션으로 표시."""
         if not getattr(self, "_first_chunk", False) or not self.streaming:
             return
-        frames = ["입력중", "입력중 ·", "입력중 · ·", "입력중 · · ·"]
+        base = getattr(self, "_retry_msg", None) or "입력중"
+        frames = [base, base + " ·", base + " · ·", base + " · · ·"]
         follow = self._at_bottom()
         self.chat.configure(state="normal")
         self.chat.delete(self._ans_start, "end-1c")
@@ -819,6 +829,8 @@ class App(tk.Tk):
                                         should_cancel=lambda: self._cancel):
             if isinstance(piece, tuple) and piece[0] == "__error__":
                 self.q.put(("err", piece[1]))
+            elif isinstance(piece, tuple) and piece[0] == "__retry__":
+                self.q.put(("retry", piece[1:]))   # (대기초, 회차, 총회차)
             else:
                 self.q.put(("chunk", piece))
         self.q.put(("done", None))
@@ -829,19 +841,25 @@ class App(tk.Tk):
                 kind, data = self.q.get_nowait()
                 if kind == "chunk":
                     if self._first_chunk:        # 첫 글자 도착 → 대기표시 제거
+                        self._retry_msg = None   # 재시도 안내 해제
                         self.chat.configure(state="normal")
                         self.chat.delete(self._ans_start, "end-1c")
                         self.chat.configure(state="disabled")
                         self._first_chunk = False
                     self._answer_acc.append(data)        # 원본 보관
                     self._append(data.replace("**", ""), "bot")   # 스트리밍 중 ** 제거
+                elif kind == "retry":
+                    wait, attempt, total = data
+                    self._retry_msg = (
+                        f"요청이 많아 약 {wait}초 후 자동으로 다시 시도합니다 (재시도 {attempt}/{total})"
+                    )
                 elif kind == "err":
                     if self._first_chunk:        # 대기표시 제거
                         self.chat.configure(state="normal")
                         self.chat.delete(self._ans_start, "end-1c")
                         self.chat.configure(state="disabled")
                         self._first_chunk = False
-                    self._append(f"\n⚠️ 오류: {data}\n", "err")
+                    self._append(f"\n⚠️ {core.friendly_error(data)}\n", "err")
                 elif kind == "done":
                     self._finish()
                     return
@@ -888,6 +906,26 @@ class App(tk.Tk):
                 self._sys(f"📄 저장됨: {path}")
             except Exception:
                 pass
+        self._append("\n✅ 답변이 완료되었습니다.\n", "sys")
+        self._notify("답변 완료", "연구설계 챗봇 답변이 완료되었습니다.")
+
+    def _notify(self, title, message):
+        """답변/작업 완료를 알린다 — 소리(벨) + macOS 알림 센터."""
+        try:
+            self.bell()                       # 모든 OS 공통 소리
+        except Exception:
+            pass
+        try:
+            if platform.system() == "Darwin":
+                safe_t = title.replace('"', "'")
+                safe_m = message.replace('"', "'")
+                subprocess.run(
+                    ["osascript", "-e",
+                     f'display notification "{safe_m}" with title "{safe_t}" sound name "Glass"'],
+                    check=False, capture_output=True,
+                )
+        except Exception:
+            pass
 
     # ════════ 출력 헬퍼 ════════
     def _at_bottom(self):
@@ -898,20 +936,46 @@ class App(tk.Tk):
             return True
 
     def _on_chat_scroll(self, lo, hi):
-        """스크롤바 갱신 + 위로 스크롤됐을 때만 '맨 아래로' 버튼 표시."""
+        """스크롤바 위치 갱신."""
         self._sb.set(lo, hi)
-        try:
-            if float(hi) >= 0.999:
-                self._jump_btn.place_forget()
-            else:
-                self._jump_btn.place(relx=0.5, rely=1.0, anchor="s", y=-10)
-                self._jump_btn.lift()
-        except Exception:
-            pass
 
-    def _jump_to_bottom(self):
-        self.chat.see("end")
-        self._jump_btn.place_forget()
+    def _enable_copy(self, widget):
+        """state=disabled인 Text에서도 드래그 선택·복사·전체 선택을 허용한다.
+        편집(붙여넣기·삭제)은 막아 읽기 전용을 유지한다."""
+        # 복사 단축키 (⌘C / Ctrl+C) 및 전체 선택 (⌘A / Ctrl+A)
+        widget.bind("<Command-c>", lambda e: self._copy_selection(widget))
+        widget.bind("<Control-c>", lambda e: self._copy_selection(widget))
+        widget.bind("<Command-a>", lambda e: self._select_all(widget))
+        widget.bind("<Control-a>", lambda e: self._select_all(widget))
+
+        # 우클릭(맥은 Button-2, 그 외 Button-3) 컨텍스트 메뉴
+        menu = tk.Menu(widget, tearoff=0)
+        menu.add_command(label="복사", command=lambda: self._copy_selection(widget))
+        menu.add_command(label="전체 선택", command=lambda: self._select_all(widget))
+
+        def popup(e):
+            try:
+                menu.tk_popup(e.x_root, e.y_root)
+            finally:
+                menu.grab_release()
+            return "break"
+
+        widget.bind("<Button-2>", popup)
+        widget.bind("<Button-3>", popup)
+
+    def _copy_selection(self, widget):
+        try:
+            sel = widget.get("sel.first", "sel.last")
+        except tk.TclError:
+            sel = ""
+        if sel:
+            self.clipboard_clear()
+            self.clipboard_append(sel)
+        return "break"
+
+    def _select_all(self, widget):
+        widget.tag_add("sel", "1.0", "end-1c")
+        return "break"
 
     def _append(self, text, tag):
         follow = self._at_bottom()              # 삽입 전 위치 판단
