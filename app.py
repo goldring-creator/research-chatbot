@@ -440,6 +440,42 @@ class App(tk.Tk):
         self.attributes("-topmost", self.pinned)
         self._sys("항상 위: " + ("켜짐 📌" if self.pinned else "꺼짐"))
 
+    def _ask_open(self, multiple=False, **kw):
+        """파일 선택 대화상자를 띄운다. '항상 위(topmost)' 때문에 대화상자가 창 뒤로
+        숨는 문제를 막기 위해, 여는 동안만 topmost를 끄고 앱을 맨 앞으로 올린 뒤 복원한다."""
+        try:
+            self.attributes("-topmost", False)
+            self.lift()
+            self.focus_force()
+            self.update_idletasks()
+        except Exception:
+            pass
+        try:
+            fn = filedialog.askopenfilenames if multiple else filedialog.askopenfilename
+            return fn(parent=self, **kw)
+        finally:
+            try:
+                self.attributes("-topmost", self.pinned)   # 원래 핀 상태로 복원
+            except Exception:
+                pass
+
+    def _ask_save(self, **kw):
+        """저장 대화상자를 띄운다. _ask_open과 동일하게 '항상 위'를 잠깐 끄고 복원한다."""
+        try:
+            self.attributes("-topmost", False)
+            self.lift()
+            self.focus_force()
+            self.update_idletasks()
+        except Exception:
+            pass
+        try:
+            return filedialog.asksaveasfilename(parent=self, **kw)
+        finally:
+            try:
+                self.attributes("-topmost", self.pinned)
+            except Exception:
+                pass
+
     def change_key(self):
         if messagebox.askyesno("키 변경", "API 키를 다시 입력하시겠습니까?"):
             self.build_onboarding()
@@ -463,7 +499,8 @@ class App(tk.Tk):
         if self.streaming:
             self._sys("진행이 끝난 뒤 파일을 첨부해 주세요.")
             return
-        paths = filedialog.askopenfilenames(
+        paths = self._ask_open(
+            multiple=True,
             title="검토할 파일 선택 (여러 개 가능)",
             filetypes=[("지원 문서·이미지", "*.txt *.md *.pdf *.docx *.png *.jpg *.jpeg"),
                        ("모든 파일", "*.*")])
@@ -689,7 +726,7 @@ class App(tk.Tk):
             html = re.sub(r"^```[a-zA-Z]*\n?", "", html)
             html = re.sub(r"\n?```$", "", html.strip())
         ts = datetime.now().strftime("%Y-%m-%d_%H%M")
-        path = filedialog.asksaveasfilename(
+        path = self._ask_save(
             title="HTML 저장 위치·파일명 선택",
             initialdir=OUT_DIR, initialfile=f"{ts}_생성문서.html",
             defaultextension=".html",
@@ -744,7 +781,7 @@ class App(tk.Tk):
             self._docx_runs(doc.add_paragraph(), line)  # 일반 단락
             i += 1
         ts = datetime.now().strftime("%Y-%m-%d_%H%M")
-        path = filedialog.asksaveasfilename(
+        path = self._ask_save(
             title="Word 저장 위치·파일명 선택",
             initialdir=OUT_DIR, initialfile=f"{ts}_생성문서.docx",
             defaultextension=".docx",
@@ -796,7 +833,7 @@ class App(tk.Tk):
         if not self.history:
             self._sys("저장할 대화가 없습니다."); return
         ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        path = filedialog.asksaveasfilename(
+        path = self._ask_save(
             title="대화 저장 — 위치·파일명 선택",
             initialdir=CONV_DIR, initialfile=f"conv_{ts}.json",
             defaultextension=".json",
@@ -811,8 +848,8 @@ class App(tk.Tk):
             self._warn(f"저장 오류: {e}")
 
     def load_conv(self):
-        path = filedialog.askopenfilename(initialdir=CONV_DIR, title="대화 불러오기",
-                                          filetypes=[("대화", "*.json")])
+        path = self._ask_open(initialdir=CONV_DIR, title="대화 불러오기",
+                              filetypes=[("대화", "*.json")])
         if not path:
             return
         with open(path, "r", encoding="utf-8") as f:
