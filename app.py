@@ -27,18 +27,22 @@ CONV_DIR = os.path.join(DATA_DIR, "conversations")
 os.makedirs(OUT_DIR, exist_ok=True)
 os.makedirs(CONV_DIR, exist_ok=True)
 
-# ── 색상 (터미널 다크 테마) ──
-C_BG = "#0d1117"
-C_BG2 = "#161b22"
-C_BORDER = "#30363d"
-C_TEXT = "#e6edf3"
-C_DIM = "#8b949e"
-C_GREEN = "#3fb950"
-C_GREEN_D = "#2ea043"
+# ── 어두운 테마 + 밝은 테두리 ──
+C_BG = "#0d1117"        # 전체 배경(어두움)
+C_BG2 = "#161b22"       # 패널(툴바·입력창)
+C_BORDER = "#30363d"    # 은은한 구분선
+C_LINE = "#cdd5df"      # 카드 테두리(밝은/흰색 느낌)
+C_TEXT = "#e6edf3"      # 본문 글자(밝음)
+C_DIM = "#8b949e"       # 흐린 글자
+C_GREEN = "#3fb950"     # 강조(버튼 배경)
+C_GREEN_D = "#2ea043"   # 버튼 hover
+C_GREEN_TX = "#3fb950"  # 초록 글자(어두운 배경 위)
 C_BLUE = "#58a6ff"
 C_AMBER = "#e3b341"
 C_RED = "#f85149"
+C_HR = "#30363d"
 
+# 폰트: 터미널 느낌의 고정폭
 if platform.system() == "Darwin":
     MONO = "Menlo"
 elif platform.system() == "Windows":
@@ -133,7 +137,7 @@ class App(tk.Tk):
         return "break"
 
     # ── 라벨 기반 버튼 (macOS에서도 색이 제대로 나옴) ──
-    def _btn(self, parent, text, cmd, fg=C_TEXT, bg=C_BG2, hover=C_BORDER,
+    def _btn(self, parent, text, cmd, fg=C_TEXT, bg=C_BG2, hover="#21262d",
              font=None, pady=6, padx=10):
         lbl = tk.Label(parent, text=text, fg=fg, bg=bg, cursor="hand2",
                        font=font or (MONO, 10), padx=padx, pady=pady)
@@ -165,7 +169,7 @@ class App(tk.Tk):
         top.pack(side="top", fill="both", expand=True)
 
         # 제목 (가운데, 큰 폰트)
-        tk.Label(top, text="🧭  사회과학 연구설계 챗봇", bg=C_BG, fg=C_GREEN,
+        tk.Label(top, text="🧭  사회과학 연구설계 챗봇", bg=C_BG, fg=C_GREEN_TX,
                  font=(MONO, 19, "bold")).pack(pady=(6, 2))
         tk.Label(top, text="NVIDIA 무료 AI · 본인 키로 작동 · 완전 무료",
                  bg=C_BG, fg=C_DIM, font=(MONO, 10)).pack(pady=(0, 16))
@@ -190,9 +194,10 @@ class App(tk.Tk):
         # 키 입력칸
         tk.Label(top, text="🔑  발급받은 API 키 붙여넣기", bg=C_BG, fg=C_TEXT,
                  font=(MONO, 11, "bold")).pack(anchor="w")
-        self.key_entry = tk.Entry(top, bg="#ffffff", fg="#0d1117",
-                                  insertbackground="#0d1117", font=(MONO, 12),
-                                  relief="flat")
+        self.key_entry = tk.Entry(top, bg="#ffffff", fg="#1A1A1A",
+                                  insertbackground="#1A1A1A", font=(MONO, 12),
+                                  relief="flat", highlightthickness=1,
+                                  highlightbackground=C_BORDER, highlightcolor=C_BLUE)
         self.key_entry.pack(fill="x", ipady=8, pady=(6, 4))
         self.key_entry.focus_set()
         self._enable_clipboard(self.key_entry)
@@ -224,7 +229,7 @@ class App(tk.Tk):
         right.pack(side="right", padx=8, pady=6)
 
         # 좌측: 모드 / 모델
-        self.mode_btn = self._btn(left, self._mode_label(), self.cycle_mode, fg=C_GREEN)
+        self.mode_btn = self._btn(left, self._mode_label(), self.cycle_mode, fg=C_GREEN_TX)
         self.mode_btn.pack(side="left", padx=4)
         _Tooltip(self.mode_btn, "모드 전환 — 설계 / 검토 / 자유문답")
         self.model_btn = self._btn(left, self._model_label(), self.cycle_model, fg=C_BLUE)
@@ -242,21 +247,23 @@ class App(tk.Tk):
             b = self._btn(right, txt, cmd, padx=9)
             b.pack(side="left", padx=5)
             _Tooltip(b, tip)
+        tk.Frame(self, bg=C_BORDER, height=1).pack(side="top", fill="x")  # 툴바 구분선
 
-        # 입력 영역 — 맨 아래 고정 (창을 줄여도 사라지지 않음)
-        sep = tk.Frame(self, bg=C_BORDER, height=1)
-        ibar = tk.Frame(self, bg=C_BG2)
-        ibar.pack(side="bottom", fill="x")
-        sep.pack(side="bottom", fill="x")
+        # 입력 영역 — 맨 아래 고정 + 안쪽 카드(밝은 테두리)
+        ibar_outer = tk.Frame(self, bg=C_BG)
+        ibar_outer.pack(side="bottom", fill="x", padx=10, pady=(4, 10))
+        ibar = tk.Frame(ibar_outer, bg=C_BG2, highlightthickness=1,
+                        highlightbackground=C_LINE, highlightcolor=C_LINE, bd=0)
+        ibar.pack(fill="x")
         # 보내기 버튼을 먼저 오른쪽에 예약 → 좁아져도 안 잘림
         self.send_btn = tk.Label(ibar, text="보내기", bg=C_GREEN, fg="#0d1117",
                                  font=(MONO, 11, "bold"), cursor="hand2", padx=14)
-        self.send_btn.pack(side="right", fill="y", padx=(4, 8), pady=8)
+        self.send_btn.pack(side="right", fill="y", padx=(4, 6), pady=6)
         self.send_btn.bind("<Button-1>", lambda e: self.send())
-        tk.Label(ibar, text=" 입력 ▸", bg=C_BG2, fg=C_GREEN,
+        tk.Label(ibar, text=" 입력 ▸", bg=C_BG2, fg=C_GREEN_TX,
                  font=(MONO, 11, "bold")).pack(side="left", anchor="n", pady=12)
         self.inp = tk.Text(ibar, bg=C_BG2, fg=C_TEXT, font=(MONO, 11), height=3,
-                          wrap="word", relief="flat", padx=6, pady=8,
+                          wrap="word", relief="flat", bd=0, padx=6, pady=8,
                           insertbackground=C_TEXT)
         self.inp.pack(side="left", fill="both", expand=True)
         self.inp.bind("<Return>", self.on_return)
@@ -266,13 +273,16 @@ class App(tk.Tk):
         self._ph_active = False
         self._set_placeholder()
 
-        # 대화 영역 — 남은 공간을 채움
+        # 대화 영역 — 창 안쪽으로 들인 카드(밝은 테두리)
         wrap = tk.Frame(self, bg=C_BG)
-        wrap.pack(side="top", fill="both", expand=True)
-        self.chat = tk.Text(wrap, bg=C_BG, fg=C_TEXT, font=(MONO, 11), wrap="word",
-                            relief="flat", padx=12, pady=10, insertbackground=C_TEXT,
+        wrap.pack(side="top", fill="both", expand=True, padx=10, pady=(8, 4))
+        card = tk.Frame(wrap, bg=C_BG, highlightthickness=1,
+                        highlightbackground=C_LINE, highlightcolor=C_LINE, bd=0)
+        card.pack(fill="both", expand=True)
+        self.chat = tk.Text(card, bg=C_BG, fg=C_TEXT, font=(MONO, 11), wrap="word",
+                            relief="flat", bd=0, padx=12, pady=10, insertbackground=C_TEXT,
                             state="disabled", spacing1=2, spacing3=4)
-        sb = tk.Scrollbar(wrap, command=self.chat.yview)
+        sb = tk.Scrollbar(card, command=self.chat.yview)
         self.chat.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         self.chat.pack(side="left", fill="both", expand=True)
@@ -281,10 +291,10 @@ class App(tk.Tk):
         self.chat.tag_config("sys", foreground=C_DIM, font=(MONO, 10))
         self.chat.tag_config("warn", foreground=C_AMBER, font=(MONO, 10))
         self.chat.tag_config("err", foreground=C_RED)
-        self.chat.tag_config("label", foreground=C_GREEN, font=(MONO, 10, "bold"))
+        self.chat.tag_config("label", foreground=C_GREEN_TX, font=(MONO, 10, "bold"))
         self.chat.tag_config("b", font=(MONO, 11, "bold"))
-        self.chat.tag_config("h", foreground=C_GREEN, font=(MONO, 12, "bold"))
-        self.chat.tag_config("hr", foreground=C_BORDER)
+        self.chat.tag_config("h", foreground=C_GREEN_TX, font=(MONO, 12, "bold"))
+        self.chat.tag_config("hr", foreground=C_HR)
 
         self._sys(f"준비 완료. 모드: {prompts.MODE_LABELS[self.mode]} · "
                   f"모델: {core.MODEL_LABELS[self.model_key]}")
@@ -326,7 +336,7 @@ class App(tk.Tk):
         win.title("도움말 — 키 발급 방법")
         win.configure(padx=22, pady=18)
         win.attributes("-topmost", True)
-        tk.Label(win, text="무료 NVIDIA API 키 발급 방법", bg=C_BG, fg=C_GREEN,
+        tk.Label(win, text="무료 NVIDIA API 키 발급 방법", bg=C_BG, fg=C_GREEN_TX,
                  font=(MONO, 13, "bold")).pack(anchor="w", pady=(0, 8))
         for s in GUIDE_STEPS:
             tk.Label(win, text=s, bg=C_BG, fg=C_TEXT, font=(MONO, 11),
@@ -419,9 +429,25 @@ class App(tk.Tk):
         self.send_btn.configure(text="...")
         self._append("\nAI ▸\n", "label")
         self._ans_start = self.chat.index("end-1c")  # 답변 시작 위치 기록
+        self._first_chunk = True
+        self._load_i = 0
         self._answer_acc = []
         threading.Thread(target=self._worker, daemon=True).start()
         self.after(40, self._poll)
+        self._animate_loading()   # 점멸 로딩 표시 시작
+
+    def _animate_loading(self):
+        """첫 글자가 오기 전까지 '입력중 …'을 점멸 애니메이션으로 표시."""
+        if not getattr(self, "_first_chunk", False) or not self.streaming:
+            return
+        frames = ["입력중", "입력중 ·", "입력중 · ·", "입력중 · · ·"]
+        self.chat.configure(state="normal")
+        self.chat.delete(self._ans_start, "end-1c")
+        self.chat.insert("end", frames[self._load_i % len(frames)], "sys")
+        self.chat.see("end")
+        self.chat.configure(state="disabled")
+        self._load_i += 1
+        self.after(400, self._animate_loading)
 
     def _worker(self):
         for piece in core.stream_answer(self.client, self.model_key, self.mode, self.history):
@@ -436,9 +462,19 @@ class App(tk.Tk):
             while True:
                 kind, data = self.q.get_nowait()
                 if kind == "chunk":
-                    self._answer_acc.append(data)
-                    self._append(data, "bot")
+                    if self._first_chunk:        # 첫 글자 도착 → 대기표시 제거
+                        self.chat.configure(state="normal")
+                        self.chat.delete(self._ans_start, "end-1c")
+                        self.chat.configure(state="disabled")
+                        self._first_chunk = False
+                    self._answer_acc.append(data)        # 원본 보관(굵게 판별용)
+                    self._append(data.replace("**", ""), "bot")  # 표시는 ** 제거
                 elif kind == "err":
+                    if self._first_chunk:        # 대기표시 제거
+                        self.chat.configure(state="normal")
+                        self.chat.delete(self._ans_start, "end-1c")
+                        self.chat.configure(state="disabled")
+                        self._first_chunk = False
                     self._append(f"\n⚠️ 오류: {data}\n", "err")
                 elif kind == "done":
                     self._finish()
@@ -506,12 +542,14 @@ class App(tk.Tk):
         self.chat.configure(state="disabled")
 
     def _inline(self, text, tag="bot"):
-        """줄 안의 **굵게**를 처리하고 남은 마크다운 기호(`)는 제거."""
+        """줄 안의 **굵게**를 처리하고 남은 마크다운 기호(** ` )는 제거."""
+        text = text.replace("`", "")
         for part in re.split(r"(\*\*.+?\*\*)", text):
-            if len(part) > 4 and part.startswith("**") and part.endswith("**"):
+            if len(part) >= 4 and part.startswith("**") and part.endswith("**"):
                 self.chat.insert("end", part[2:-2], "b" if tag == "bot" else tag)
             else:
-                self.chat.insert("end", part.replace("`", ""), tag)
+                # 짝이 안 맞아 남은 ** 기호 제거
+                self.chat.insert("end", part.replace("**", ""), tag)
 
     def _sys(self, text):
         self._append("\n· " + text + "\n", "sys")

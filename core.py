@@ -99,15 +99,19 @@ def stream_answer(client, model_key, mode, history):
     """history를 보내 답변 청크를 하나씩 yield 한다. 오류 시 ('__error__', 메시지) yield."""
     system = prompts.build_system(mode)
     messages = [{"role": "system", "content": system}] + history
+    kwargs = dict(
+        model=MODELS[model_key],
+        messages=messages,
+        temperature=0.5,
+        top_p=0.95,
+        max_tokens=8192,
+        stream=True,
+    )
+    # DeepSeek은 내부 추론(thinking)을 끄면 첫 응답이 빨라진다
+    if model_key == "deepseek":
+        kwargs["extra_body"] = {"chat_template_kwargs": {"thinking": False}}
     try:
-        stream = client.chat.completions.create(
-            model=MODELS[model_key],
-            messages=messages,
-            temperature=0.5,
-            top_p=0.95,
-            max_tokens=8192,
-            stream=True,
-        )
+        stream = client.chat.completions.create(**kwargs)
         for chunk in stream:
             delta = chunk.choices[0].delta.content
             if delta:
