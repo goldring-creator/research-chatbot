@@ -32,7 +32,7 @@ MODEL_LABELS = {
 BASE_URL = "https://integrate.api.nvidia.com/v1"
 
 # 읽기 지원 형식 (앱 각주 표시용)
-SUPPORTED_NOTE = "읽기 지원: PDF · Word(.docx) · 텍스트(.txt /.md)   ·   한글(.hwp /.hwpx)은 지원 제한"
+SUPPORTED_NOTE = "읽기 지원: PDF · Word(.docx) · 텍스트(.txt /.md) · 이미지(OCR)   ·   한글(.hwp /.hwpx)은 PDF로 저장 후 첨부"
 
 
 # ── 키 저장/로드 ──
@@ -49,6 +49,10 @@ def load_key() -> str:
 def save_key(key: str):
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump({"api_key": key.strip()}, f, ensure_ascii=False)
+    try:
+        os.chmod(CONFIG_PATH, 0o600)   # 키 파일은 본인만 읽도록 (macOS·리눅스)
+    except Exception:
+        pass
 
 
 def valid_key_format(key: str) -> bool:
@@ -62,11 +66,14 @@ def make_client(key: str) -> OpenAI:
 
 # ── 한자/가나 오염 검사 ──
 def check_cjk(text: str) -> list:
-    """한자(U+4E00–9FFF)·가나(U+3040–30FF) 의심 문자를 찾는다."""
+    """한자(기본·확장A·호환)·가나 의심 문자를 찾는다."""
     found = []
     for i, ch in enumerate(text):
         code = ord(ch)
-        if 0x4E00 <= code <= 0x9FFF or 0x3040 <= code <= 0x30FF:
+        if (0x4E00 <= code <= 0x9FFF      # 한자 기본
+                or 0x3400 <= code <= 0x4DBF   # 한자 확장 A
+                or 0xF900 <= code <= 0xFAFF   # 호환 한자
+                or 0x3040 <= code <= 0x30FF):  # 히라가나·가타카나
             ctx = text[max(0, i - 6):i + 6].replace("\n", " ")
             found.append(f"'{ch}'(U+{code:04X}) …{ctx}…")
     return found
@@ -264,6 +271,11 @@ def friendly_error(raw: str) -> str:
         return "이 키로는 해당 모델에 접근할 수 없습니다. NVIDIA 계정의 키 권한을 확인해 주세요."
     if "404" in s or "not found" in low:
         return "모델을 찾을 수 없습니다. 모델 이름이 바뀌었거나 종료되었을 수 있습니다."
+    if ("context length" in low or "maximum context" in low
+            or "context_length" in low or "too long" in low):
+        return "대화가 너무 길어 모델 한도를 넘었습니다. 새 대화로 시작하거나 첨부·질문을 나눠 보내 주세요."
+    if "400" in s or "bad request" in low:
+        return "요청이 너무 크거나 형식이 맞지 않습니다. 첨부 분량을 줄여 다시 시도해 주세요."
     if "500" in s or "502" in s or "503" in s or "internal server" in low or "service unavailable" in low:
         return "NVIDIA 서버가 일시적으로 불안정합니다. 잠시 후 다시 시도해 주세요."
     if "timeout" in low or "timed out" in low:

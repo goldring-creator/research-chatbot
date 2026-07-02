@@ -63,7 +63,7 @@ MODE_DESC = {
     "review": [
         "초안을 입력하거나 📎로 파일 첨부 → 모래시계 구조로 검토",
         "결과·해석 분리, 논의 6단계, 재현가능성, 인용 점검",
-        "예) 📎 내 서론 초안.hwpx 첨부 → 피드백",
+        "예) 📎 내 서론 초안.pdf 첨부 → 피드백 (한글 파일은 PDF로 저장 후 첨부)",
     ],
     "chat": [
         "연구방법론·통계·연구설계에 대한 자유 질문",
@@ -73,7 +73,7 @@ MODE_DESC = {
 }
 
 # ── 버전·업데이트 확인 ──
-APP_VERSION = "0.1.7"
+APP_VERSION = "0.1.8"
 REPO = "goldring-creator/research-chatbot"
 RELEASES_URL = f"https://github.com/{REPO}/releases/latest"
 
@@ -273,6 +273,10 @@ class App(tk.Tk):
         self.mode_btn.pack(side="left", padx=4)
         _Tooltip(self.mode_btn, "모드 선택 — 클릭하면 설계 / 검토 / 자유문답 목록이 열립니다")
 
+        self.model_btn = self._btn(left, self._model_label(), self.open_model_menu, fg=C_BLUE)
+        self.model_btn.pack(side="left", padx=4)
+        _Tooltip(self.model_btn, "모델 선택 — DeepSeek(정밀) / Nemotron(빠름)")
+
         # 우측: 아이콘 (균등 간격)
         for txt, cmd, tip in [
             ("📎", self.attach_file, "파일 첨부(여러 개 가능) — 초안을 검토 모드로 분석"),
@@ -280,6 +284,7 @@ class App(tk.Tk):
             ("💾", self.save_conv, "현재 대화 저장"),
             ("📂", self.load_conv, "저장한 대화 불러오기"),
             ("📌", self.toggle_pin, "항상 위에 고정 켜기/끄기"),
+            ("❓", self.show_help, "도움말 — 키 발급 방법"),
             ("🔑", self.change_key, "API 키 변경"),
         ]:
             b = self._btn(right, txt, cmd, padx=9)
@@ -311,6 +316,7 @@ class App(tk.Tk):
                           insertbackground=C_TEXT)
         self.inp.pack(side="left", fill="both", expand=True)
         self.inp.bind("<Return>", self.on_return)
+        self.inp.bind("<Shift-Return>", lambda e: None)   # Shift+Enter는 기본 동작(줄바꿈)
         self.inp.bind("<FocusIn>", self._clear_placeholder)
         self.inp.bind("<FocusOut>", self._restore_placeholder)
         self._enable_clipboard(self.inp)
@@ -383,6 +389,36 @@ class App(tk.Tk):
 
     def _mode_label(self):
         return f" 모드:{prompts.MODE_LABELS[self.mode]} ▾ "
+
+    def _model_label(self):
+        short = "DeepSeek" if self.model_key == "deepseek" else "Nemotron"
+        return f" 모델:{short} ▾ "
+
+    def open_model_menu(self):
+        """모델 버튼을 누르면 선택 목록을 띄운다."""
+        menu = tk.Menu(self, tearoff=0, bg=C_BG2, fg=C_TEXT,
+                       activebackground=C_GREEN, activeforeground="#0d1117",
+                       font=(MONO, 10), bd=0)
+        for key in ("deepseek", "nemotron"):
+            mark = "● " if key == self.model_key else "○ "
+            menu.add_command(label=mark + core.MODEL_LABELS[key],
+                             command=lambda k=key: self.set_model(k))
+        x = self.model_btn.winfo_rootx()
+        y = self.model_btn.winfo_rooty() + self.model_btn.winfo_height()
+        try:
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def set_model(self, key):
+        if key == self.model_key:
+            return
+        if self.streaming:
+            self._sys("답변 생성이 끝난 뒤 모델을 변경해 주세요.")
+            return
+        self.model_key = key
+        self.model_btn.configure(text=self._model_label())
+        self._sys(f"→ 모델: {core.MODEL_LABELS[key]}")
 
     # ════════ 토글/명령 ════════
     MODE_ORDER = ["design", "review", "chat"]
@@ -477,6 +513,9 @@ class App(tk.Tk):
                 pass
 
     def change_key(self):
+        if self.streaming:
+            self._sys("답변 생성이 끝난 뒤 키를 변경해 주세요.")
+            return
         if messagebox.askyesno("키 변경", "API 키를 다시 입력하시겠습니까?"):
             self.build_onboarding()
 
@@ -848,12 +887,24 @@ class App(tk.Tk):
             self._warn(f"저장 오류: {e}")
 
     def load_conv(self):
+        if self.streaming:
+            self._sys("답변 생성이 끝난 뒤 불러와 주세요.")
+            return
         path = self._ask_open(initialdir=CONV_DIR, title="대화 불러오기",
                               filetypes=[("대화", "*.json")])
         if not path:
             return
-        with open(path, "r", encoding="utf-8") as f:
-            self.history = json.load(f)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not (isinstance(data, list) and
+                    all(isinstance(m, dict) and "role" in m and "content" in m
+                        for m in data)):
+                raise ValueError("대화 파일 형식이 아닙니다.")
+        except Exception as e:
+            self._warn(f"불러오기 오류: {e}")
+            return
+        self.history = data
         self.chat.configure(state="normal"); self.chat.delete("1.0", "end")
         self.chat.configure(state="disabled")
         for m in self.history:
@@ -1051,13 +1102,13 @@ class App(tk.Tk):
         # 복사 단축키 (⌘C / Ctrl+C) 및 전체 선택 (⌘A / Ctrl+A)
         widget.bind("<Command-c>", lambda e: self._copy_selection(widget))
         widget.bind("<Control-c>", lambda e: self._copy_selection(widget))
-        widget.bind("<Command-a>", lambda e: self._select_all(widget))
-        widget.bind("<Control-a>", lambda e: self._select_all(widget))
+        widget.bind("<Command-a>", lambda e: self._select_all_text(widget))
+        widget.bind("<Control-a>", lambda e: self._select_all_text(widget))
 
         # 우클릭(맥은 Button-2, 그 외 Button-3) 컨텍스트 메뉴
         menu = tk.Menu(widget, tearoff=0)
         menu.add_command(label="복사", command=lambda: self._copy_selection(widget))
-        menu.add_command(label="전체 선택", command=lambda: self._select_all(widget))
+        menu.add_command(label="전체 선택", command=lambda: self._select_all_text(widget))
 
         def popup(e):
             try:
@@ -1079,7 +1130,7 @@ class App(tk.Tk):
             self.clipboard_append(sel)
         return "break"
 
-    def _select_all(self, widget):
+    def _select_all_text(self, widget):
         widget.tag_add("sel", "1.0", "end-1c")
         return "break"
 

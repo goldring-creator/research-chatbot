@@ -35,7 +35,7 @@ jobs:
           pip install pyinstaller
 
       - name: Build app
-        run: pyinstaller --noconfirm --windowed --name ResearchChatbot app.py
+        run: pyinstaller --noconfirm --windowed --name ResearchChatbot --collect-all pymupdf app.py
 
       - name: Zip (macOS)
         if: matrix.os == 'macos-latest'
